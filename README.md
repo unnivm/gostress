@@ -39,6 +39,8 @@ go run . --from-report report.json --formats html --output reports/run-01
 go run . --serve-web --web-addr :8088 --dashboard-report report.json
 ```
 
+![Alt text](db.png)
+
 ## Flags
 
 - `--url`: target URL, required
