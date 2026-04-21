@@ -1,0 +1,350 @@
+package main
+
+import (
+	"encoding/json"
+	"flag"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"sort"
+	"sync"
+	"sync/atomic"
+	"time"
+)
+
+type Config struct {
+	URL         string
+	Concurrency int
+	Duration    time.Duration
+}
+
+type Result struct {
+	Latency time.Duration
+	Error   error
+}
+
+type LatencyStats struct {
+	Min time.Duration
+	Max time.Duration
+	Avg time.Duration
+	P50 time.Duration
+	P95 time.Duration
+	P99 time.Duration
+}
+
+func parseFlags() Config {
+	url := flag.String("url", "", "Target URL to stress test (required)")
+	concurrency := flag.Int("c", 10, "Number of concurrent workers (goroutines)")
+	duration := flag.Int("d", 10, "Duration of test in seconds")
+	flag.Parse()
+
+	if *url == "" {
+		fmt.Println("❌ Error: --url is required")
+		flag.Usage()
+		panic("Missing required --url argument")
+	}
+
+	return Config{
+		URL:         *url,
+		Concurrency: *concurrency,
+		Duration:    time.Duration(*duration) * time.Second,
+	}
+}
+
+func worker(client *http.Client, url string, duration time.Duration, results chan<- Result, wg *sync.WaitGroup, totalBytes *int64) {
+	defer wg.Done()
+	endTime := time.Now().Add(duration)
+
+	for time.Now().Before(endTime) {
+		start := time.Now()
+		resp, err := client.Get(url)
+		latency := time.Since(start)
+
+		if err == nil {
+			n, _ := io.Copy(io.Discard, resp.Body) // Read and discard response body
+			atomic.AddInt64(totalBytes, n)         // Add to total bytes received
+			resp.Body.Close()
+		}
+
+		results <- Result{
+			Latency: latency,
+			Error:   err,
+		}
+	}
+}
+
+// Begin stress test
+func runStressTest(cfg Config) {
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+	}
+
+	var wg sync.WaitGroup
+	results := make(chan Result, cfg.Concurrency*100)
+
+	startTime := time.Now()
+
+	done := make(chan struct{})
+
+	// Show progress
+	go showProgress(startTime, cfg.Duration, done)
+
+	for i := 0; i < cfg.Concurrency; i++ {
+		wg.Add(1)
+		go worker(client, cfg.URL, cfg.Duration, results, &wg, &totalBytes)
+	}
+
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
+	var totalReq, failedReq, successReq int
+	var totalLatency time.Duration
+	var latencies []time.Duration
+
+	for result := range results {
+		totalReq++
+		if result.Error != nil {
+			failedReq++
+		} else {
+			successReq++
+			totalLatency += result.Latency
+			latencies = append(latencies, result.Latency)
+		}
+	}
+
+	elapsed := time.Since(startTime)
+	fmt.Println()
+	fmt.Println()
+
+	fmt.Println("🧾 1. Test Configuration")
+	fmt.Println("--------------------------")
+	fmt.Printf("Test Start Time:       %s\n", time.Now().Format("2006-01-02 15:04:05"))
+	fmt.Printf("Target URL:            %s\n", cfg.URL)
+	fmt.Printf("Concurrency Level:     %d\n", cfg.Concurrency)
+	fmt.Printf("Test Duration:         %v\n", cfg.Duration)
+	fmt.Printf("Request Method:        %s\n", "GET")
+	fmt.Printf("Payload/Body:          %s\n", "")
+	fmt.Printf("Headers Used:          %s\n", "")
+
+	fmt.Println()
+	fmt.Println("📈 2. Request Statistics")
+	fmt.Println("------------------------")
+	fmt.Printf("Total Requests Sent:   %10d\n", totalReq)
+	fmt.Printf("❌ Failed Requests:     %10d\n", failedReq)
+	fmt.Printf("✅ Success Requests:    %10d\n", successReq)
+
+	sr := (float64(successReq) / float64(totalReq)) * 100
+	fmt.Printf("Success Rate:           %9.2f%%\n", sr)
+
+	rps := float64(totalReq) / elapsed.Seconds()
+	fmt.Printf("Requests per Second:    %9.2f\n", rps)
+
+	var latencyStats LatencyStats
+	var p95 time.Duration
+	var p99 time.Duration
+	if totalReq > failedReq {
+		// Compute percentiles
+		p95 = ComputePercentile(latencies, 95)
+		p99 = ComputePercentile(latencies, 99)
+
+		// Compute latencies
+		latencyStats = ComputeLatencyStats(latencies)
+		avgLatency := totalLatency / time.Duration(totalReq-failedReq)
+
+		fmt.Println()
+		fmt.Println("⏱ 3. Latency Status")
+		fmt.Println("-------------------")
+		fmt.Printf("Min Latency:            %15v\n", latencyStats.Min)
+		fmt.Printf("Max Latency:            %15v\n", latencyStats.Max)
+		fmt.Printf("Average Latency:        %15v\n", avgLatency)
+		fmt.Printf("p95 Latency:            %15v\n", p95)
+		fmt.Printf("p99 Latency:            %15v\n", p99)
+	}
+
+	mbTransferred, throughput := ComputeThroughput(atomic.LoadInt64(&totalBytes), elapsed)
+
+	fmt.Println()
+	fmt.Println("💾 4. Throughput")
+	fmt.Println("------------------------")
+	fmt.Printf("Total Data Transferred:   %9.2f MB\n", mbTransferred)
+	fmt.Printf("Average Throughput:       %9.2f MB/s\n", throughput)
+	fmt.Printf("⌚ Test Duration:          %v\n", elapsed)
+	fmt.Println()
+
+	// save to a json file
+	report := TestReport{
+		StartTime:   time.Now().Format("2006-01-02 15:04:05"),
+		URL:         cfg.URL,
+		Concurrency: cfg.Concurrency,
+		Duration:    cfg.Duration.String(),
+		Method:      "GET",
+		Payload:     "",
+		Headers:     []string{}, // Add if headers are present
+
+		TotalRequests:     totalReq,
+		FailedRequests:    failedReq,
+		SuccessRequests:   successReq,
+		SuccessRate:       sr,
+		RequestsPerSecond: rps,
+
+		MinLatency:     latencyStats.Min,
+		MaxLatency:     latencyStats.Max,
+		AverageLatency: totalLatency / time.Duration(totalReq-failedReq),
+		P95Latency:     p95,
+		P99Latency:     p99,
+
+		TotalDataMB:     mbTransferred,
+		AvgThroughputMB: throughput,
+		ActualDuration:  elapsed,
+	}
+	err := saveReportToFile(report, "report.json")
+	if err != nil {
+		fmt.Println("Error saving report:", err)
+	} else {
+		fmt.Println("✅ Report saved to report.json")
+	}
+
+	///
+
+}
+
+var totalBytes int64
+
+func main() {
+	fmt.Printf("%s Running  Stress test suite", time.Now().Format("2006-JAN-01 15:04:05"))
+	fmt.Println()
+	fmt.Printf("%s Parsing input arguments", time.Now().Format("2006-JAN-01 15:04:05"))
+	fmt.Println()
+	cfg := parseFlags()
+	fmt.Printf("%s Begin Stress test", time.Now().Format("2006-JAN-01 15:04:05"))
+
+	runStressTest(cfg)
+}
+
+// ComputePercentile returns the Nth percentile (e.g. 95, 99) latency from a slice
+func ComputePercentile(latencies []time.Duration, percentile float64) time.Duration {
+	if len(latencies) == 0 {
+		return 0
+	}
+
+	// Sort the latencies ascending
+	sort.Slice(latencies, func(i, j int) bool {
+		return latencies[i] < latencies[j]
+	})
+
+	index := int((percentile / 100.0) * float64(len(latencies)))
+	if index >= len(latencies) {
+		index = len(latencies) - 1
+	}
+
+	return latencies[index]
+}
+
+func showProgress(start time.Time, duration time.Duration, done <-chan struct{}) {
+	ticker := time.NewTicker(1 * time.Second)
+	fmt.Println()
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			elapsed := time.Since(start)
+			percent := float64(elapsed) / float64(duration) * 100
+			if percent > 100 {
+				percent = 100
+			}
+
+			fmt.Printf("\r⏱️  Test Progress: %.1f%%", percent)
+
+		case <-done:
+			fmt.Println("\r✅ Test Completed: 100%         ")
+			return
+		}
+	}
+}
+
+func ComputeLatencyStats(latencies []time.Duration) LatencyStats {
+	if len(latencies) == 0 {
+		return LatencyStats{}
+	}
+
+	sort.Slice(latencies, func(i, j int) bool {
+		return latencies[i] < latencies[j]
+	})
+
+	var (
+		total time.Duration
+		min   = latencies[0]
+		max   = latencies[len(latencies)-1]
+	)
+
+	for _, l := range latencies {
+		total += l
+	}
+
+	return LatencyStats{
+		Min: min,
+		Max: max,
+		Avg: total / time.Duration(len(latencies)),
+		P50: percentile(latencies, 50),
+		P95: percentile(latencies, 95),
+		P99: percentile(latencies, 99),
+	}
+}
+
+// Helper: Calculate Nth percentile from sorted slice
+func percentile(sorted []time.Duration, percent float64) time.Duration {
+	if len(sorted) == 0 {
+		return 0
+	}
+	index := int((percent / 100.0) * float64(len(sorted)))
+	if index >= len(sorted) {
+		index = len(sorted) - 1
+	}
+	return sorted[index]
+}
+
+// ComputeThroughput calculates total MB transferred and throughput in MB/sec
+func ComputeThroughput(totalBytes int64, duration time.Duration) (float64, float64) {
+	mbTransferred := float64(totalBytes) / (1024 * 1024)
+	mbPerSecond := mbTransferred / duration.Seconds()
+	return mbTransferred, mbPerSecond
+}
+
+type TestReport struct {
+	StartTime   string   `json:"start_time"`
+	URL         string   `json:"url"`
+	Concurrency int      `json:"concurrency"`
+	Duration    string   `json:"duration"`
+	Method      string   `json:"method"`
+	Payload     string   `json:"payload"`
+	Headers     []string `json:"headers"`
+
+	TotalRequests     int     `json:"total_requests"`
+	FailedRequests    int     `json:"failed_requests"`
+	SuccessRequests   int     `json:"success_requests"`
+	SuccessRate       float64 `json:"success_rate"`
+	RequestsPerSecond float64 `json:"requests_per_second"`
+
+	MinLatency     time.Duration `json:"min_latency"`
+	MaxLatency     time.Duration `json:"max_latency"`
+	AverageLatency time.Duration `json:"average_latency"`
+	P95Latency     time.Duration `json:"p95_latency"`
+	P99Latency     time.Duration `json:"p99_latency"`
+
+	TotalDataMB     float64       `json:"total_data_mb"`
+	AvgThroughputMB float64       `json:"avg_throughput_mb_s"`
+	ActualDuration  time.Duration `json:"actual_duration"`
+}
+
+func saveReportToFile(report TestReport, filename string) error {
+	data, err := json.MarshalIndent(report, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	return os.WriteFile(filename, data, 0644)
+}

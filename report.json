@@ -1,0 +1,37 @@
+{
+  "start_time": "2026-04-21 12:23:39",
+  "url": "http://localhost:8080",
+  "concurrency": 10,
+  "duration": "10s",
+  "method": "GET",
+  "payload": "",
+  "headers": null,
+  "success_status": "200-399",
+  "rate_limit_rps": 0,
+  "output_formats": [
+    "json"
+  ],
+  "status_codes": {
+    "200": 109387
+  },
+  "transport_error_types": {
+    "deadline_exceeded": 10
+  },
+  "total_requests": 109397,
+  "failed_requests": 10,
+  "transport_errors": 10,
+  "http_failures": 0,
+  "success_requests": 109387,
+  "success_rate": 99.99085898150773,
+  "error_rate": 0.00914101849228041,
+  "requests_per_second": 10939.516170182373,
+  "min_latency": "32.916µs",
+  "max_latency": "39.455083ms",
+  "average_latency": "882.297µs",
+  "p50_latency": "230.542µs",
+  "p95_latency": "5.674459ms",
+  "p99_latency": "12.352459ms",
+  "total_data_mb": 1190.8079195022583,
+  "avg_throughput_mb_s": 119.07879092640734,
+  "actual_duration": "10.000168042s"
+}
