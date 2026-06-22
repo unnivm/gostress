@@ -71,3 +71,6 @@ go run . --serve-web --web-addr :8088 --dashboard-report report.json
 - Account storage in this Go implementation is in-memory for the lifetime of the running process.
 - Transport-level problems such as timeouts or connection failures are counted separately.
 - Duration values in the saved report are written in human-readable Go duration format such as `125ms` or `10.2s`.
+
+Thank you for your support
+![Buy me a coffee](https://ko-fi.com/unnimana)
