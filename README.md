@@ -73,4 +73,4 @@ go run . --serve-web --web-addr :8088 --dashboard-report report.json
 - Duration values in the saved report are written in human-readable Go duration format such as `125ms` or `10.2s`.
 
 Thank you for your support
-![Buy me a coffee](<script type='text/javascript' src='https://storage.ko-fi.com/cdn/widget/Widget_2.js'></script><script type='text/javascript'>kofiwidget2.init('Support me on Ko-fi', '#72a4f2', 'I4Y721V3M6');kofiwidget2.draw();</script> )
+[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/I4Y721V3M6)
