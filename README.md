@@ -72,6 +72,6 @@ go run . --serve-web --web-addr :8088 --dashboard-report report.json
 - Transport-level problems such as timeouts or connection failures are counted separately.
 - Duration values in the saved report are written in human-readable Go duration format such as `125ms` or `10.2s`.
 
-If you find this tool worthy, please give a rating or support
+⭐ If you find GoStress useful, please consider giving it a star!
 
 [![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/I4Y721V3M6)
