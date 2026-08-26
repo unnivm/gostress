@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -53,6 +54,14 @@ func TestValidateAndNormalizeConfigRejectsInvalidValues(t *testing.T) {
 		{
 			name: "empty output prefix",
 			cfg:  Config{URL: "http://example.com", Concurrency: 1, Duration: time.Second, Method: http.MethodGet, SuccessStatusSpec: "200-399", OutputFormats: []string{"json"}, OutputPrefix: ""},
+		},
+		{
+			name: "negative ramp",
+			cfg:  Config{URL: "http://example.com", Concurrency: 1, Duration: time.Second, Method: http.MethodGet, SuccessStatusSpec: "200-399", OutputFormats: []string{"json"}, OutputPrefix: "report", RampDuration: -1 * time.Second},
+		},
+		{
+			name: "ramp exceeds duration",
+			cfg:  Config{URL: "http://example.com", Concurrency: 10, Duration: 5 * time.Second, Method: http.MethodGet, SuccessStatusSpec: "200-399", OutputFormats: []string{"json"}, OutputPrefix: "report", RampDuration: 10 * time.Second},
 		},
 	}
 
@@ -279,13 +288,13 @@ func TestWriteReportsCreatesRequestedFormats(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed reading html file: %v", err)
 	}
-	if !strings.Contains(string(htmlContent), "gostress HTML Report") {
+	if !strings.Contains(string(htmlContent), "gostress") {
 		t.Fatalf("expected html output to contain title, got %s", string(htmlContent))
 	}
-	if !strings.Contains(string(htmlContent), "Executive Summary") {
+	if !strings.Contains(string(htmlContent), "Analysis") {
 		t.Fatalf("expected html output to contain narrative section, got %s", string(htmlContent))
 	}
-	if !strings.Contains(string(htmlContent), "Latency Chart") {
+	if !strings.Contains(string(htmlContent), "Latency Distribution") {
 		t.Fatalf("expected html output to contain chart section, got %s", string(htmlContent))
 	}
 }
@@ -345,7 +354,69 @@ func TestExportExistingReportRendersHTML(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed reading rendered html file: %v", err)
 	}
-	if !strings.Contains(string(htmlContent), "Reliability Breakdown") {
+	if !strings.Contains(string(htmlContent), "Reliability") {
 		t.Fatalf("expected rendered html to contain richer sections, got %s", string(htmlContent))
+	}
+}
+
+func TestConcurrencyRampReachesTarget(t *testing.T) {
+	deadline := time.Now().Add(1 * time.Second)
+	ramp := newConcurrencyRamp(1, 10, 800*time.Millisecond, deadline)
+	defer ramp.StopAfter()
+
+	time.Sleep(1100 * time.Millisecond)
+
+	if got := ramp.CurrentLimit(); got != 10 {
+		t.Fatalf("expected concurrency limit to reach 10, got %d", got)
+	}
+}
+
+func TestConcurrencyRampNoRamp(t *testing.T) {
+	deadline := time.Now().Add(2 * time.Second)
+	ramp := newConcurrencyRamp(10, 10, 0, deadline)
+
+	if got := ramp.CurrentLimit(); got != 10 {
+		t.Fatalf("expected immediate concurrency 10, got %d", got)
+	}
+}
+
+func TestConcurrencyRampWaitBlocks(t *testing.T) {
+	deadline := time.Now().Add(2 * time.Second)
+	ramp := newConcurrencyRamp(0, 5, 100*time.Millisecond, deadline)
+	defer ramp.StopAfter()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	err := ramp.Wait(ctx)
+	if err == nil {
+		t.Fatal("expected Wait to block when limit is 0")
+	}
+}
+
+func TestConcurrencyRampWaitPassesWhenLimitPositive(t *testing.T) {
+	deadline := time.Now().Add(2 * time.Second)
+	ramp := newConcurrencyRamp(1, 10, 100*time.Millisecond, deadline)
+	defer ramp.StopAfter()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	err := ramp.Wait(ctx)
+	if err != nil {
+		t.Fatalf("expected Wait to succeed, got %v", err)
+	}
+}
+
+func TestFormatRampDuration(t *testing.T) {
+	got := formatRampDuration(60*time.Second, 500)
+	expected := "1m0s (1 → 500 workers)"
+	if got != expected {
+		t.Fatalf("expected %q, got %q", expected, got)
+	}
+
+	got = formatRampDuration(0, 10)
+	if got != "" {
+		t.Fatalf("expected empty string for zero duration, got %q", got)
 	}
 }

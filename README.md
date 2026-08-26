@@ -20,8 +20,9 @@ go run . --url http://localhost:8080
 ```bash
 go run . \
   --url http://localhost:8080/api/orders \
-  --c 50 \
-  --d 30 \
+  --c 500 \
+  --d 300 \
+  --ramp 60 \
   --method POST \
   --payload '{"customerId":123}' \
   --headers 'Authorization: Bearer token, X-Trace: demo' \
@@ -39,8 +40,6 @@ go run . --from-report report.json --formats html --output reports/run-01
 go run . --serve-web --web-addr :8088 --dashboard-report report.json
 ```
 
-![Alt text](db.png)
-
 ## Flags
 
 - `--url`: target URL, required
@@ -51,6 +50,7 @@ go run . --serve-web --web-addr :8088 --dashboard-report report.json
 - `--headers`: comma-separated `key:value` pairs
 - `--success-status`: comma-separated successful status codes or ranges, default `200-399`
 - `--rps`: global requests-per-second cap across all workers, default `0` for unlimited
+- `--ramp`: ramp-up duration in seconds from 1 to `--c` concurrent workers, default `0` (no ramp)
 - `--formats`: output formats to write, comma-separated `json,csv,html`, default `json`
 - `--output`: output file prefix without extension, default `report`
 - `--from-report`: render output files from an existing JSON report instead of running a new test
@@ -63,6 +63,7 @@ go run . --serve-web --web-addr :8088 --dashboard-report report.json
 - By default, HTTP `2xx` and `3xx` responses are treated as successful requests.
 - You can override that with `--success-status`, for example `200-299,429` if `429` is acceptable for your test case.
 - The `--rps` limit is shared across all workers, so concurrency and request rate can be tuned independently.
+- `--ramp` gradually increases concurrency from 1 to `--c` over the specified duration, useful for finding the exact breaking point under increasing load. Must be shorter than `--d`.
 - Output files are written as `<prefix>.json`, `<prefix>.csv`, and `<prefix>.html` depending on `--formats`.
 - The HTML report includes a narrative summary plus built-in charts for reliability, latency, status codes, and transport errors.
 - `--from-report` is handy when you already have `report.json` and only want to re-render it as polished HTML.
@@ -71,7 +72,3 @@ go run . --serve-web --web-addr :8088 --dashboard-report report.json
 - Account storage in this Go implementation is in-memory for the lifetime of the running process.
 - Transport-level problems such as timeouts or connection failures are counted separately.
 - Duration values in the saved report are written in human-readable Go duration format such as `125ms` or `10.2s`.
-
-⭐ If you find GoStress useful, please consider giving it a star!
-
-[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/I4Y721V3M6)

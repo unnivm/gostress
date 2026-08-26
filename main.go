@@ -42,6 +42,7 @@ type Config struct {
 	ServeWeb          bool
 	WebAddr           string
 	DashboardReport   string
+	RampDuration      time.Duration
 }
 
 type Result struct {
@@ -87,6 +88,7 @@ type TestReport struct {
 	Headers           []string       `json:"headers"`
 	SuccessStatusSpec string         `json:"success_status"`
 	RateLimitRPS      float64        `json:"rate_limit_rps"`
+	RampDuration      string         `json:"ramp_duration"`
 	OutputFormats     []string       `json:"output_formats"`
 	StatusCodes       map[string]int `json:"status_codes"`
 	ErrorTypes        map[string]int `json:"transport_error_types"`
@@ -215,6 +217,108 @@ func (l *tickerLimiter) Stop() {
 	}
 }
 
+type concurrencyRamp struct {
+	mu         sync.RWMutex
+	limit      int
+	target     int
+	done       chan struct{}
+	stop       chan struct{}
+	currentCap int
+}
+
+func newConcurrencyRamp(startConcurrency, targetConcurrency int, rampDuration time.Duration, testDeadline time.Time) *concurrencyRamp {
+	r := &concurrencyRamp{
+		limit:      startConcurrency,
+		target:     targetConcurrency,
+		done:       make(chan struct{}),
+		stop:       make(chan struct{}),
+		currentCap: startConcurrency,
+	}
+
+	if rampDuration <= 0 || targetConcurrency <= startConcurrency {
+		r.limit = targetConcurrency
+		r.currentCap = targetConcurrency
+		close(r.done)
+		return r
+	}
+
+	go r.run(startConcurrency, targetConcurrency, rampDuration, testDeadline)
+	return r
+}
+
+func (r *concurrencyRamp) run(start, target int, rampDuration time.Duration, deadline time.Time) {
+	defer close(r.done)
+
+	startTime := deadline.Add(-rampDuration)
+	if time.Now().After(startTime) {
+		startTime = time.Now()
+	}
+
+	steps := target - start
+	stepDuration := rampDuration / time.Duration(steps)
+
+	for i := 1; i <= steps; i++ {
+		select {
+		case <-r.stop:
+			return
+		default:
+		}
+
+		newLimit := start + i
+		stepTime := startTime.Add(stepDuration * time.Duration(i))
+
+		waitDur := time.Until(stepTime)
+		if waitDur > 0 {
+			select {
+			case <-r.stop:
+				return
+			case <-time.After(waitDur):
+			}
+		}
+
+		r.mu.Lock()
+		r.limit = newLimit
+		r.currentCap = newLimit
+		r.mu.Unlock()
+	}
+}
+
+func (r *concurrencyRamp) Wait(ctx context.Context) error {
+	for {
+		r.mu.RLock()
+		limit := r.limit
+		r.mu.RUnlock()
+
+		if limit > 0 {
+			return nil
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-r.stop:
+			return ctx.Err()
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+}
+
+func (r *concurrencyRamp) CurrentLimit() int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.limit
+}
+
+func (r *concurrencyRamp) StopAfter() {
+	select {
+	case <-r.stop:
+		return
+	default:
+		close(r.stop)
+	}
+	<-r.done
+}
+
 func parseFlags() (Config, error) {
 	urlFlag := flag.String("url", "", "Target URL to stress test (required)")
 	concurrency := flag.Int("c", 10, "Number of concurrent workers (goroutines)")
@@ -224,6 +328,7 @@ func parseFlags() (Config, error) {
 	headers := flag.String("headers", "", "Custom headers in key:value format, separated by commas")
 	successStatus := flag.String("success-status", "200-399", "Comma-separated successful status codes/ranges (example: 200-299,304)")
 	rps := flag.Float64("rps", 0, "Global requests per second limit across all workers (0 disables limiting)")
+	ramp := flag.Int("ramp", 0, "Ramp-up duration in seconds from 1 to --c concurrent workers (0 disables ramp)")
 	formats := flag.String("formats", "json", "Output formats: comma-separated json,csv,html")
 	output := flag.String("output", "report", "Output file prefix without extension")
 	fromReport := flag.String("from-report", "", "Render reports from an existing JSON report instead of running a new test")
@@ -241,6 +346,7 @@ func parseFlags() (Config, error) {
 		Headers:           strings.TrimSpace(*headers),
 		SuccessStatusSpec: strings.TrimSpace(*successStatus),
 		RequestsPerSecond: *rps,
+		RampDuration:      time.Duration(*ramp) * time.Second,
 		OutputPrefix:      strings.TrimSpace(*output),
 		FromReport:        strings.TrimSpace(*fromReport),
 		ServeWeb:          *serveWeb,
@@ -318,6 +424,14 @@ func validateAndNormalizeConfig(cfg Config) (Config, error) {
 
 	if cfg.RequestsPerSecond < 0 {
 		return Config{}, errors.New("--rps must be 0 or greater")
+	}
+
+	if cfg.RampDuration < 0 {
+		return Config{}, errors.New("--ramp must be 0 or greater")
+	}
+
+	if cfg.RampDuration > 0 && cfg.RampDuration >= cfg.Duration {
+		return Config{}, errors.New("--ramp must be shorter than --d")
 	}
 
 	if cfg.OutputPrefix == "" {
@@ -548,15 +662,37 @@ func runStressTest(cfg Config) error {
 	startTime := time.Now()
 	deadline := startTime.Add(cfg.Duration)
 
-	stopProgress := make(chan struct{})
-	go showProgress(startTime, cfg.Duration, stopProgress)
-
-	for i := 0; i < cfg.Concurrency; i++ {
-		wg.Add(1)
-		go worker(client, cfg, deadline, limiter, results, &wg)
+	var ramp *concurrencyRamp
+	if cfg.RampDuration > 0 {
+		ramp = newConcurrencyRamp(1, cfg.Concurrency, cfg.RampDuration, deadline)
+	} else {
+		ramp = newConcurrencyRamp(cfg.Concurrency, cfg.Concurrency, 0, deadline)
 	}
 
+	stopProgress := make(chan struct{})
+	go showProgress(startTime, cfg.Duration, stopProgress, func() int {
+		return ramp.CurrentLimit()
+	})
+
 	go func() {
+		spawned := 0
+		for {
+			if time.Now().After(deadline) {
+				break
+			}
+			curLimit := ramp.CurrentLimit()
+			toSpawn := curLimit - spawned
+			for i := 0; i < toSpawn; i++ {
+				if time.Now().After(deadline) {
+					break
+				}
+				wg.Add(1)
+				go worker(client, cfg, deadline, limiter, results, &wg)
+				spawned++
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		ramp.StopAfter()
 		wg.Wait()
 		close(results)
 	}()
@@ -610,7 +746,7 @@ func runStressTest(cfg Config) error {
 	return printAndSaveReport(cfg, startTime, summary)
 }
 
-func showProgress(start time.Time, duration time.Duration, done <-chan struct{}) {
+func showProgress(start time.Time, duration time.Duration, done <-chan struct{}, currentConcurrency func() int) {
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 
@@ -622,9 +758,10 @@ func showProgress(start time.Time, duration time.Duration, done <-chan struct{})
 			if percent > 100 {
 				percent = 100
 			}
-			fmt.Printf("\rTest Progress: %.1f%%", percent)
+			concurrency := currentConcurrency()
+			fmt.Printf("\rTest Progress: %.1f%% | Concurrency: %d   ", percent, concurrency)
 		case <-done:
-			fmt.Printf("\rTest Completed: 100%%\n\n")
+			fmt.Printf("\rTest Completed: 100%%                        \n\n")
 			return
 		}
 	}
@@ -644,6 +781,9 @@ func printAndSaveReport(cfg Config, startTime time.Time, summary Summary) error 
 	fmt.Printf("Test Start Time:       %s\n", startTime.Format("2006-01-02 15:04:05"))
 	fmt.Printf("Target URL:            %s\n", cfg.URL)
 	fmt.Printf("Concurrency Level:     %d\n", cfg.Concurrency)
+	if cfg.RampDuration > 0 {
+		fmt.Printf("Ramp Duration:         %s (1 → %d workers)\n", cfg.RampDuration, cfg.Concurrency)
+	}
 	fmt.Printf("Test Duration:         %s\n", cfg.Duration)
 	fmt.Printf("Request Method:        %s\n", cfg.Method)
 	fmt.Printf("Payload/Body:          %s\n", safeDisplayValue(cfg.Payload))
@@ -711,6 +851,7 @@ func buildReport(cfg Config, startTime time.Time, headersList []string, summary 
 		Headers:           headersList,
 		SuccessStatusSpec: cfg.SuccessStatusSpec,
 		RateLimitRPS:      cfg.RequestsPerSecond,
+		RampDuration:      formatRampDuration(cfg.RampDuration, cfg.Concurrency),
 		OutputFormats:     append([]string(nil), cfg.OutputFormats...),
 		StatusCodes:       stringifyIntMap(summary.StatusCodes),
 		ErrorTypes:        cloneStringMap(summary.TransportErrorTypes),
@@ -833,323 +974,509 @@ func renderHTMLReport(report TestReport) ([]byte, error) {
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>gostress report</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>gostress — Load Test Report</title>
   <style>
     :root {
-      --ink: #14304a;
-      --muted: #5f7084;
-      --line: #d7dee7;
-      --paper: #fbfaf6;
-      --panel: #ffffff;
-      --accent: #2f6f62;
-      --accent-soft: #dff3ed;
-      --warn: #c76a28;
-      --warn-soft: #fde9d8;
-      --danger: #a63a3a;
-      --danger-soft: #f9dede;
-      --shadow: 0 14px 36px rgba(20, 48, 74, 0.08);
+      --bg: #0c1117;
+      --surface: #161b22;
+      --surface2: #1c2333;
+      --border: #30363d;
+      --text: #e6edf3;
+      --muted: #8b949e;
+      --green: #3fb950;
+      --green-dim: rgba(63,185,80,0.15);
+      --amber: #d29922;
+      --amber-dim: rgba(210,153,34,0.15);
+      --red: #f85149;
+      --red-dim: rgba(248,81,73,0.15);
+      --blue: #58a6ff;
+      --blue-dim: rgba(88,166,255,0.15);
+      --purple: #bc8cff;
+      --purple-dim: rgba(188,140,255,0.15);
+      --cyan: #39d353;
+      --radius: 16px;
+      --radius-sm: 10px;
     }
-    * { box-sizing: border-box; }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
-      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
       padding: 32px;
-      font-family: Georgia, "Times New Roman", serif;
-      color: var(--ink);
-      background:
-        radial-gradient(circle at top left, rgba(47,111,98,0.10), transparent 28%),
-        radial-gradient(circle at top right, rgba(199,106,40,0.10), transparent 24%),
-        linear-gradient(180deg, #fcfbf8 0%, #f4efe7 100%);
+      line-height: 1.6;
     }
-    .page { max-width: 1180px; margin: 0 auto; }
-    h1, h2, h3 { color: #10273d; margin-top: 0; }
-    p { line-height: 1.65; }
+    .container { max-width: 1200px; margin: 0 auto; }
+
     .hero {
-      background: linear-gradient(135deg, rgba(16,39,61,0.96), rgba(47,111,98,0.92));
-      color: #f7fbff;
+      position: relative;
+      background: linear-gradient(135deg, #161b22 0%, #0d1117 50%, #161b22 100%);
+      border: 1px solid var(--border);
       border-radius: 24px;
-      padding: 32px;
-      box-shadow: var(--shadow);
-      margin-bottom: 22px;
-    }
-    .hero h1 { color: #ffffff; font-size: 40px; margin-bottom: 8px; }
-    .hero p { color: rgba(247,251,255,0.88); max-width: 900px; }
-    .meta { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 18px; }
-    .pill {
-      padding: 8px 12px;
-      border-radius: 999px;
-      background: rgba(255,255,255,0.12);
-      border: 1px solid rgba(255,255,255,0.16);
-      font-size: 14px;
-    }
-    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; margin-bottom: 22px; }
-    .card {
-      background: var(--panel);
-      border: 1px solid var(--line);
-      border-radius: 20px;
-      padding: 20px;
-      box-shadow: var(--shadow);
-    }
-    .kpi {
-      font-size: 34px;
-      line-height: 1;
-      margin: 8px 0 4px;
-      font-weight: bold;
-    }
-    .muted { color: var(--muted); }
-    .section { margin-bottom: 22px; }
-    .section-head {
-      display: flex;
-      justify-content: space-between;
-      align-items: baseline;
-      gap: 12px;
-      margin-bottom: 12px;
-    }
-    .prose {
-      background: rgba(255,255,255,0.76);
-      border: 1px solid rgba(215,222,231,0.8);
-      border-radius: 18px;
-      padding: 20px;
-      box-shadow: var(--shadow);
-    }
-    .prose p:last-child { margin-bottom: 0; }
-    .stack {
-      width: 100%;
-      height: 20px;
-      display: flex;
+      padding: 48px 40px;
+      margin-bottom: 24px;
       overflow: hidden;
-      border-radius: 999px;
-      background: #edf2f7;
-      border: 1px solid #dde5ee;
-      margin: 12px 0 10px;
     }
-    .stack .success { background: linear-gradient(90deg, #2f6f62, #3e9e89); }
-    .stack .http { background: linear-gradient(90deg, #c76a28, #e59a53); }
-    .stack .transport { background: linear-gradient(90deg, #a63a3a, #d96a6a); }
-    .legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: 14px; color: var(--muted); }
-    .legend span::before {
+    .hero::before {
       content: "";
-      display: inline-block;
-      width: 10px;
-      height: 10px;
-      border-radius: 50%;
-      margin-right: 8px;
-      vertical-align: middle;
+      position: absolute;
+      top: -50%;
+      right: -20%;
+      width: 500px;
+      height: 500px;
+      background: radial-gradient(circle, rgba(63,185,80,0.08) 0%, transparent 70%);
+      pointer-events: none;
     }
-    .legend .success::before { background: #2f6f62; }
-    .legend .http::before { background: #c76a28; }
-    .legend .transport::before { background: #a63a3a; }
-    .bar-group { display: grid; gap: 12px; margin-top: 14px; }
-    .bar-row { display: grid; grid-template-columns: 130px 1fr 96px; gap: 12px; align-items: center; }
-    .bar-track {
-      width: 100%;
-      height: 16px;
-      background: #edf2f7;
+    .hero::after {
+      content: "";
+      position: absolute;
+      bottom: -40%;
+      left: -10%;
+      width: 400px;
+      height: 400px;
+      background: radial-gradient(circle, rgba(88,166,255,0.06) 0%, transparent 70%);
+      pointer-events: none;
+    }
+    .hero .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: var(--green-dim);
+      color: var(--green);
+      padding: 6px 14px;
       border-radius: 999px;
+      font-size: 12px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      margin-bottom: 16px;
+    }
+    .hero .badge::before {
+      content: "";
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--green);
+      animation: pulse 2s infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+    .hero h1 {
+      font-size: 42px;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+      margin-bottom: 12px;
+      background: linear-gradient(135deg, #fff 0%, #8b949e 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+    .hero .subtitle { color: var(--muted); font-size: 16px; margin-bottom: 20px; }
+    .meta { display: flex; flex-wrap: wrap; gap: 10px; }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 7px 14px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      font-size: 13px;
+      color: var(--muted);
+    }
+    .pill b { color: var(--text); font-weight: 600; }
+
+    .kpi-row {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 16px;
+      margin-bottom: 24px;
+    }
+    .kpi-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 24px;
+      position: relative;
       overflow: hidden;
-      border: 1px solid #dde5ee;
+      transition: border-color 0.2s;
+    }
+    .kpi-card:hover { border-color: var(--blue); }
+    .kpi-card .label { color: var(--muted); font-size: 13px; font-weight: 500; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.06em; }
+    .kpi-card .value { font-size: 36px; font-weight: 700; letter-spacing: -0.02em; line-height: 1.1; }
+    .kpi-card .sub { color: var(--muted); font-size: 13px; margin-top: 6px; }
+    .kpi-card .accent { position: absolute; top: 0; right: 0; width: 80px; height: 80px; border-radius: 0 0 0 80px; opacity: 0.08; }
+
+    .section-title {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 16px;
+      margin-top: 8px;
+    }
+    .section-title h2 { font-size: 20px; font-weight: 700; }
+    .section-title .tag {
+      font-size: 11px;
+      padding: 4px 10px;
+      border-radius: 999px;
+      background: var(--blue-dim);
+      color: var(--blue);
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 24px; }
+    .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 20px; margin-bottom: 24px; }
+
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 28px;
+    }
+
+    .donut-section { display: flex; align-items: center; gap: 32px; }
+    .donut-wrap { flex-shrink: 0; }
+    .donut-legend { flex: 1; }
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 10px 0;
+      border-bottom: 1px solid var(--border);
+    }
+    .legend-item:last-child { border-bottom: none; }
+    .legend-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+    .legend-label { color: var(--muted); font-size: 14px; flex: 1; }
+    .legend-value { font-weight: 700; font-size: 15px; }
+
+    .bar-chart { display: flex; flex-direction: column; gap: 14px; }
+    .bar-item { display: grid; grid-template-columns: 120px 1fr 80px; gap: 12px; align-items: center; }
+    .bar-item .label { font-size: 14px; font-weight: 600; }
+    .bar-track {
+      height: 24px;
+      background: var(--surface2);
+      border-radius: 8px;
+      overflow: hidden;
+      position: relative;
     }
     .bar-fill {
       height: 100%;
-      border-radius: 999px;
-      min-width: 6px;
+      border-radius: 8px;
+      min-width: 4px;
+      transition: width 0.6s cubic-bezier(0.22, 1, 0.36, 1);
     }
-    .tone-teal { background: linear-gradient(90deg, #2f6f62, #61b8a7); }
-    .tone-amber { background: linear-gradient(90deg, #c76a28, #f1b36d); }
-    .tone-red { background: linear-gradient(90deg, #a63a3a, #e28787); }
-    .tone-blue { background: linear-gradient(90deg, #255f8f, #6bb3e4); }
-    .two-col { display: grid; grid-template-columns: 1.1fr 0.9fr; gap: 16px; }
-    .notes { display: grid; gap: 14px; }
-    .note {
-      padding: 16px;
-      border-radius: 16px;
-      border: 1px solid var(--line);
-      background: #fffdfa;
+    .bar-item .count { font-size: 14px; font-weight: 600; text-align: right; color: var(--muted); }
+
+    .gradient-green { background: linear-gradient(90deg, #238636, #3fb950); }
+    .gradient-amber { background: linear-gradient(90deg, #9e6a03, #d29922); }
+    .gradient-red { background: linear-gradient(90deg, #da3633, #f85149); }
+    .gradient-blue { background: linear-gradient(90deg, #1f6feb, #58a6ff); }
+    .gradient-purple { background: linear-gradient(90deg, #8957e5, #bc8cff); }
+    .gradient-cyan { background: linear-gradient(90deg, #1a7f37, #3fb950); }
+
+    .prose { color: var(--text); font-size: 16px; line-height: 1.9; }
+    .prose p { margin-bottom: 14px; }
+    .prose p:last-child { margin-bottom: 0; }
+
+    .table-card { overflow: hidden; }
+    .table-card table { width: 100%; border-collapse: collapse; }
+    .table-card th, .table-card td { padding: 12px 16px; text-align: left; font-size: 14px; }
+    .table-card th { color: var(--muted); font-weight: 600; text-transform: uppercase; font-size: 11px; letter-spacing: 0.08em; background: var(--surface2); border-bottom: 1px solid var(--border); }
+    .table-card td { border-bottom: 1px solid var(--border); }
+    .table-card tr:last-child td { border-bottom: none; }
+    .table-card td:first-child { font-weight: 600; font-family: "SF Mono", Menlo, Monaco, monospace; font-size: 13px; }
+
+    .note-card {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 16px 20px;
+      margin-bottom: 12px;
     }
-    table { width: 100%; border-collapse: collapse; margin-top: 12px; background: #ffffff; border-radius: 14px; overflow: hidden; }
-    th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid #e9ecef; }
-    th { background: #f0f4f8; }
-    @media (max-width: 860px) {
-      body { padding: 18px; }
-      .hero { padding: 22px; }
-      .hero h1 { font-size: 30px; }
-      .two-col { grid-template-columns: 1fr; }
-      .bar-row { grid-template-columns: 1fr; }
+    .note-card:last-child { margin-bottom: 0; }
+    .note-card h3 { font-size: 13px; font-weight: 600; color: var(--blue); margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.06em; }
+    .note-card p { font-size: 14px; color: var(--muted); line-height: 1.7; }
+
+    .config-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 24px; }
+    .config-row { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 14px; }
+    .config-row:last-child { border-bottom: none; }
+    .config-row .key { color: var(--muted); }
+    .config-row .val { font-weight: 600; font-family: "SF Mono", Menlo, Monaco, monospace; font-size: 13px; }
+
+    .footer {
+      margin-top: 40px;
+      padding-top: 20px;
+      border-top: 1px solid var(--border);
+      text-align: center;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    @media (max-width: 900px) {
+      body { padding: 16px; }
+      .hero { padding: 28px 20px; }
+      .hero h1 { font-size: 28px; }
+      .kpi-row { grid-template-columns: 1fr 1fr; }
+      .grid-2, .grid-3 { grid-template-columns: 1fr; }
+      .donut-section { flex-direction: column; }
+      .config-grid { grid-template-columns: 1fr; }
+      .bar-item { grid-template-columns: 1fr; gap: 4px; }
     }
   </style>
 </head>
 <body>
-  <div class="page">
+  <div class="container">
     <section class="hero">
-      <p class="muted">Generated at {{.Report.StartTime}}</p>
-      <h1>gostress HTML Report</h1>
-      <p>{{.SummaryHeadline}}</p>
+      <div class="badge">Load Test Complete</div>
+      <h1>Performance Report</h1>
+      <p class="subtitle">{{.SummaryHeadline}}</p>
       <div class="meta">
-        <span class="pill">Target: {{.Report.URL}}</span>
-        <span class="pill">Method: {{.Report.Method}}</span>
-        <span class="pill">Concurrency: {{.Report.Concurrency}}</span>
-        <span class="pill">Duration: {{.Report.Duration}}</span>
-        <span class="pill">Actual: {{.Report.ActualDuration}}</span>
+        <span class="pill"><b>{{.Report.Method}}</b> {{.Report.URL}}</span>
+        <span class="pill"><b>{{.Report.Concurrency}}</b> workers</span>
+        {{if .Report.RampDuration}}<span class="pill">Ramp <b>{{.Report.RampDuration}}</b></span>{{end}}
+        <span class="pill"><b>{{.Report.Duration}}</b> target</span>
+        <span class="pill">Actual <b>{{.Report.ActualDuration}}</b></span>
       </div>
     </section>
 
-    <section class="section prose">
-      <div class="section-head">
-        <h2>Executive Summary</h2>
-        <span class="muted">Readable narrative for quick review</span>
+    <div class="kpi-row">
+      <div class="kpi-card">
+        <div class="accent" style="background:var(--blue)"></div>
+        <div class="label">Total Requests</div>
+        <div class="value" style="color:var(--blue)">{{.Report.TotalRequests}}</div>
+        <div class="sub">Across {{.Report.ActualDuration}}</div>
       </div>
-      {{range .SummaryParagraphs}}
-      <p>{{.}}</p>
-      {{end}}
-    </section>
+      <div class="kpi-card">
+        <div class="accent" style="background:var(--green)"></div>
+        <div class="label">Success Rate</div>
+        <div class="value" style="color:var(--green)">{{printf "%.1f%%" .Report.SuccessRate}}</div>
+        <div class="sub">{{.Report.SuccessRequests}} successful</div>
+      </div>
+      <div class="kpi-card">
+        <div class="accent" style="background:var(--purple)"></div>
+        <div class="label">Throughput</div>
+        <div class="value" style="color:var(--purple)">{{printf "%.1f" .Report.RequestsPerSecond}}</div>
+        <div class="sub">requests / second</div>
+      </div>
+      <div class="kpi-card">
+        <div class="accent" style="background:var(--amber)"></div>
+        <div class="label">Avg Latency</div>
+        <div class="value" style="color:var(--amber)">{{.Report.AverageLatency}}</div>
+        <div class="sub">p95 {{.Report.P95Latency}} · p99 {{.Report.P99Latency}}</div>
+      </div>
+    </div>
 
-    <section class="section grid">
+    <div class="grid-2">
       <div class="card">
-        <div class="muted">Total requests</div>
-        <div class="kpi">{{.Report.TotalRequests}}</div>
-        <div class="muted">Across {{.Report.ActualDuration}}</div>
+        <div class="section-title">
+          <h2>Reliability</h2>
+          <span class="tag">Health</span>
+        </div>
+        <div class="donut-section">
+          <div class="donut-wrap">
+            <svg width="180" height="180" viewBox="0 0 180 180">
+              <circle cx="90" cy="90" r="70" fill="none" stroke="var(--surface2)" stroke-width="16"/>
+              <circle cx="90" cy="90" r="70" fill="none" stroke="var(--green)" stroke-width="16"
+                stroke-dasharray="{{printf "%.1f" .SuccessPct}} {{printf "%.1f" (sub 100.0 .SuccessPct)}}"
+                stroke-dashoffset="25" stroke-linecap="round" transform="rotate(-90 90 90)"/>
+              {{if gt .HTTPFailurePct 0.0}}
+              <circle cx="90" cy="90" r="70" fill="none" stroke="var(--amber)" stroke-width="16"
+                stroke-dasharray="{{printf "%.1f" .HTTPFailurePct}} {{printf "%.1f" (sub 100.0 .HTTPFailurePct)}}"
+                stroke-dashoffset="{{printf "%.1f" (sub 25.0 .SuccessPct)}}" stroke-linecap="round" transform="rotate(-90 90 90)"/>
+              {{end}}
+              {{if gt .TransportErrorPct 0.0}}
+              <circle cx="90" cy="90" r="70" fill="none" stroke="var(--red)" stroke-width="16"
+                stroke-dasharray="{{printf "%.1f" .TransportErrorPct}} {{printf "%.1f" (sub 100.0 .TransportErrorPct)}}"
+                stroke-dashoffset="{{printf "%.1f" (sub 25.0 (add .SuccessPct .HTTPFailurePct))}}" stroke-linecap="round" transform="rotate(-90 90 90)"/>
+              {{end}}
+              <text x="90" y="86" text-anchor="middle" fill="var(--text)" font-size="28" font-weight="800">{{printf "%.1f%%" .Report.SuccessRate}}</text>
+              <text x="90" y="106" text-anchor="middle" fill="var(--muted)" font-size="12">success</text>
+            </svg>
+          </div>
+          <div class="donut-legend">
+            <div class="legend-item">
+              <div class="legend-dot" style="background:var(--green)"></div>
+              <div class="legend-label">Success</div>
+              <div class="legend-value" style="color:var(--green)">{{printf "%.1f%%" .SuccessPct}}</div>
+            </div>
+            <div class="legend-item">
+              <div class="legend-dot" style="background:var(--amber)"></div>
+              <div class="legend-label">HTTP Failures</div>
+              <div class="legend-value" style="color:var(--amber)">{{printf "%.1f%%" .HTTPFailurePct}}</div>
+            </div>
+            <div class="legend-item">
+              <div class="legend-dot" style="background:var(--red)"></div>
+              <div class="legend-label">Transport Errors</div>
+              <div class="legend-value" style="color:var(--red)">{{printf "%.1f%%" .TransportErrorPct}}</div>
+            </div>
+          </div>
+        </div>
       </div>
-      <div class="card">
-        <div class="muted">Success rate</div>
-        <div class="kpi">{{printf "%.2f%%" .Report.SuccessRate}}</div>
-        <div class="muted">{{.Report.SuccessRequests}} successful responses</div>
-      </div>
-      <div class="card">
-        <div class="muted">Observed throughput</div>
-        <div class="kpi">{{printf "%.2f" .Report.RequestsPerSecond}}</div>
-        <div class="muted">Requests per second</div>
-      </div>
-      <div class="card">
-        <div class="muted">Average latency</div>
-        <div class="kpi">{{.Report.AverageLatency}}</div>
-        <div class="muted">p95 {{.Report.P95Latency}} • p99 {{.Report.P99Latency}}</div>
-      </div>
-    </section>
 
-    <section class="section two-col">
       <div class="card">
-        <div class="section-head">
-          <h2>Reliability Breakdown</h2>
-          <span class="muted">Success vs failure mix</span>
+        <div class="section-title">
+          <h2>Configuration</h2>
+          <span class="tag">Setup</span>
         </div>
-        <div class="stack">
-          <div class="success" style="width: {{printf "%.2f" .SuccessPct}}%"></div>
-          <div class="http" style="width: {{printf "%.2f" .HTTPFailurePct}}%"></div>
-          <div class="transport" style="width: {{printf "%.2f" .TransportErrorPct}}%"></div>
+        <div class="config-grid">
+          <div class="config-row"><span class="key">Success statuses</span><span class="val">{{.Report.SuccessStatusSpec}}</span></div>
+          <div class="config-row"><span class="key">RPS limit</span><span class="val">{{formatRate .Report.RateLimitRPS}}</span></div>
+          <div class="config-row"><span class="key">Concurrency</span><span class="val">{{.Report.Concurrency}}</span></div>
+          <div class="config-row"><span class="key">Ramp</span><span class="val">{{defaultText .Report.RampDuration "(none)"}}</span></div>
+          <div class="config-row"><span class="key">Duration</span><span class="val">{{.Report.Duration}}</span></div>
+          <div class="config-row"><span class="key">Method</span><span class="val">{{.Report.Method}}</span></div>
+          <div class="config-row"><span class="key">Headers</span><span class="val">{{defaultText (join .Report.Headers ", ") "(none)"}}</span></div>
+          <div class="config-row"><span class="key">Payload</span><span class="val">{{defaultText .Report.Payload "(none)"}}</span></div>
         </div>
-        <div class="legend">
-          <span class="success">Success {{printf "%.2f%%" .SuccessPct}}</span>
-          <span class="http">HTTP failures {{printf "%.2f%%" .HTTPFailurePct}}</span>
-          <span class="transport">Transport errors {{printf "%.2f%%" .TransportErrorPct}}</span>
-        </div>
-        <p class="muted">{{.ReliabilityNote}}</p>
       </div>
-      <div class="card">
-        <div class="section-head">
-          <h2>Configuration Snapshot</h2>
-          <span class="muted">How this run was executed</span>
-        </div>
-        <p><strong>Success statuses:</strong> {{.Report.SuccessStatusSpec}}</p>
-        <p><strong>RPS limit:</strong> {{formatRate .Report.RateLimitRPS}}</p>
-        <p><strong>Output formats:</strong> {{join .Report.OutputFormats ", "}}</p>
-        <p><strong>Headers:</strong> {{defaultText (join .Report.Headers ", ") "(none)"}}</p>
-        <p><strong>Payload:</strong> {{defaultText .Report.Payload "(none)"}}</p>
-      </div>
-    </section>
+    </div>
 
-    <section class="section two-col">
+    <div class="grid-2">
       <div class="card">
-        <div class="section-head">
-          <h2>Latency Chart</h2>
-          <span class="muted">Relative to max latency</span>
+        <div class="section-title">
+          <h2>Latency Distribution</h2>
+          <span class="tag">Timing</span>
         </div>
-        <div class="bar-group">
+        <div class="bar-chart">
           {{range .LatencyBars}}
-          <div class="bar-row">
-            <div><strong>{{.Label}}</strong></div>
-            <div class="bar-track"><div class="bar-fill {{.Tone}}" style="width: {{printf "%.2f" .Width}}%"></div></div>
-            <div class="muted">{{.Value}}</div>
+          <div class="bar-item">
+            <div class="label">{{.Label}}</div>
+            <div class="bar-track"><div class="bar-fill {{.Tone}}" style="width: {{printf "%.1f" .Width}}%"></div></div>
+            <div class="count">{{.Value}}</div>
           </div>
           {{end}}
         </div>
-        <p class="muted">{{.LatencyNote}}</p>
       </div>
-      <div class="notes">
-        <div class="note">
-          <h3>Throughput Note</h3>
+
+      <div class="card">
+        <div class="section-title">
+          <h2>Status Codes</h2>
+          <span class="tag">HTTP</span>
+        </div>
+        <div class="bar-chart">
+          {{range .StatusCodeBars}}
+          <div class="bar-item">
+            <div class="label">{{.Label}}</div>
+            <div class="bar-track"><div class="bar-fill {{.Tone}}" style="width: {{printf "%.1f" .Width}}%"></div></div>
+            <div class="count">{{.Value}}</div>
+          </div>
+          {{else}}
+          <p style="color:var(--muted);font-size:14px;">No HTTP responses recorded.</p>
+          {{end}}
+        </div>
+      </div>
+    </div>
+
+    <div class="grid-2">
+      <div class="card">
+        <div class="section-title">
+          <h2>Transport Errors</h2>
+          <span class="tag">Infra</span>
+        </div>
+        <div class="bar-chart">
+          {{range .ErrorBars}}
+          <div class="bar-item">
+            <div class="label">{{.Label}}</div>
+            <div class="bar-track"><div class="bar-fill {{.Tone}}" style="width: {{printf "%.1f" .Width}}%"></div></div>
+            <div class="count">{{.Value}}</div>
+          </div>
+          {{else}}
+          <p style="color:var(--muted);font-size:14px;">No transport errors recorded.</p>
+          {{end}}
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="section-title">
+          <h2>Throughput</h2>
+          <span class="tag">Data</span>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:20px;">
+          <div class="note-card">
+            <h3>Total Data</h3>
+            <div style="font-size:28px;font-weight:700;color:var(--cyan);">{{printf "%.2f" .Report.TotalDataMB}} <span style="font-size:14px;color:var(--muted);">MB</span></div>
+          </div>
+          <div class="note-card">
+            <h3>Avg Throughput</h3>
+            <div style="font-size:28px;font-weight:700;color:var(--cyan);">{{printf "%.2f" .Report.AvgThroughputMB}} <span style="font-size:14px;color:var(--muted);">MB/s</span></div>
+          </div>
+        </div>
+        <div class="note-card">
+          <h3>Analysis</h3>
           <p>{{.ThroughputNote}}</p>
         </div>
-        <div class="note">
-          <h3>Failure Note</h3>
-          <p>{{.ReliabilityNote}}</p>
-        </div>
       </div>
-    </section>
+    </div>
 
-    <section class="section two-col">
-      <div class="card">
-        <div class="section-head">
-          <h2>Status Code Distribution</h2>
-          <span class="muted">Observed HTTP responses</span>
-        </div>
-        <div class="bar-group">
-          {{range .StatusCodeBars}}
-          <div class="bar-row">
-            <div><strong>{{.Label}}</strong></div>
-            <div class="bar-track"><div class="bar-fill {{.Tone}}" style="width: {{printf "%.2f" .Width}}%"></div></div>
-            <div class="muted">{{.Value}}</div>
-          </div>
-          {{else}}
-          <p class="muted">No HTTP responses recorded.</p>
-          {{end}}
-        </div>
+    <div class="section-title" style="margin-top:8px;">
+      <h2>Analysis & Insights</h2>
+      <span class="tag">Narrative</span>
+    </div>
+    <div class="card" style="margin-bottom:24px;">
+      <div class="prose">
+        {{range .SummaryParagraphs}}
+        <p>{{.}}</p>
+        {{end}}
       </div>
-      <div class="card">
-        <div class="section-head">
-          <h2>Transport Error Distribution</h2>
-          <span class="muted">Network and timeout level failures</span>
-        </div>
-        <div class="bar-group">
-          {{range .ErrorBars}}
-          <div class="bar-row">
-            <div><strong>{{.Label}}</strong></div>
-            <div class="bar-track"><div class="bar-fill {{.Tone}}" style="width: {{printf "%.2f" .Width}}%"></div></div>
-            <div class="muted">{{.Value}}</div>
-          </div>
-          {{else}}
-          <p class="muted">No transport errors recorded.</p>
-          {{end}}
-        </div>
-      </div>
-    </section>
+    </div>
 
-    <section class="section two-col">
-      <div class="card">
-        <h2>Status Codes Table</h2>
+    <div class="section-title" style="margin-top:8px;">
+      <h2>Transport Errors Explained</h2>
+      <span class="tag">Reference</span>
+    </div>
+    <div class="card" style="margin-bottom:24px;">
+      <div class="prose">
+        <p><b>Transport errors</b> are network-level failures that occur <em>before</em> your application returns an HTTP response. Unlike HTTP failures (e.g. 500, 503), transport errors mean the request never reached the server or the response was never fully received. Common causes include:</p>
+        <p><b>deadline_exceeded</b> — The request took longer than the allowed time. This usually means the server is overloaded, the database is slow, or there is a network bottleneck. Under high concurrency, this is often the first signal that your target is reaching capacity.</p>
+        <p><b>connection refused</b> — The server actively rejected the TCP connection. This typically indicates the target service is down, not listening on the expected port, or has exhausted its connection pool.</p>
+        <p><b>connection reset</b> — An established connection was abruptly terminated by the remote end. This can happen under heavy load when a server or load balancer drops connections to shed pressure.</p>
+        <p><b>EOF / broken pipe</b> — The server closed the connection before sending a complete response. This often points to a crashed handler, a proxy timeout, or a server restart mid-request.</p>
+        {{if gt .TransportErrorPct 0.0}}
+        <p><b>In this test:</b> transport errors accounted for <b>{{printf "%.1f%%" .TransportErrorPct}}</b> of all requests. {{if gt .TransportErrorPct 20.0}}This is a significant portion and strongly suggests the target is under stress or experiencing infrastructure-level instability. Consider reducing concurrency or investigating upstream timeouts.{{else}}This is within a moderate range and may reflect occasional timeouts under load.{{end}}</p>
+        {{end}}
+      </div>
+    </div>
+
+    <div class="grid-2">
+      <div class="card table-card">
+        <div class="section-title">
+          <h2>Status Code Table</h2>
+        </div>
         <table>
           <thead><tr><th>Code</th><th>Count</th></tr></thead>
           <tbody>
             {{range .StatusCodes}}
             <tr><td>{{.Key}}</td><td>{{.Value}}</td></tr>
             {{else}}
-            <tr><td colspan="2">No HTTP responses recorded</td></tr>
+            <tr><td colspan="2" style="color:var(--muted);">No HTTP responses recorded</td></tr>
             {{end}}
           </tbody>
         </table>
       </div>
-      <div class="card">
-        <h2>Transport Errors Table</h2>
+      <div class="card table-card">
+        <div class="section-title">
+          <h2>Transport Error Table</h2>
+        </div>
         <table>
           <thead><tr><th>Error</th><th>Count</th></tr></thead>
           <tbody>
             {{range .ErrorTypes}}
             <tr><td>{{.Key}}</td><td>{{.Value}}</td></tr>
             {{else}}
-            <tr><td colspan="2">No transport errors recorded</td></tr>
+            <tr><td colspan="2" style="color:var(--muted);">No transport errors recorded</td></tr>
             {{end}}
           </tbody>
         </table>
       </div>
-    </section>
+    </div>
+
+    <div class="footer">
+      Generated by <b>gostress</b> at {{.Report.StartTime}}
+    </div>
   </div>
 </body>
 </html>`
@@ -1158,6 +1485,8 @@ func renderHTMLReport(report TestReport) ([]byte, error) {
 		"join":        strings.Join,
 		"defaultText": defaultText,
 		"formatRate":  formatRateLimit,
+		"sub":         func(a, b float64) float64 { return a - b },
+		"add":         func(a, b float64) float64 { return a + b },
 	}).Parse(reportTemplate)
 	if err != nil {
 		return nil, err
@@ -1190,14 +1519,14 @@ func buildHTMLReportView(report TestReport) htmlReportView {
 		TransportErrorPct: transportErrorPct,
 		HTTPFailurePct:    httpFailurePct,
 		LatencyBars: []chartBar{
-			durationBar("p50", report.P50Latency, report.MaxLatency, "tone-blue"),
-			durationBar("Average", report.AverageLatency, report.MaxLatency, "tone-teal"),
-			durationBar("p95", report.P95Latency, report.MaxLatency, "tone-amber"),
-			durationBar("p99", report.P99Latency, report.MaxLatency, "tone-red"),
-			durationBar("Max", report.MaxLatency, report.MaxLatency, "tone-red"),
+			durationBar("p50", report.P50Latency, report.MaxLatency, "gradient-blue"),
+			durationBar("Average", report.AverageLatency, report.MaxLatency, "gradient-green"),
+			durationBar("p95", report.P95Latency, report.MaxLatency, "gradient-amber"),
+			durationBar("p99", report.P99Latency, report.MaxLatency, "gradient-red"),
+			durationBar("Max", report.MaxLatency, report.MaxLatency, "gradient-red"),
 		},
-		StatusCodeBars:    countBars(statusEntries, "tone-teal"),
-		ErrorBars:         countBars(errorEntries, "tone-red"),
+		StatusCodeBars:    countBars(statusEntries, "gradient-green"),
+		ErrorBars:         countBars(errorEntries, "gradient-red"),
 		SummaryHeadline:   buildSummaryHeadline(report),
 		SummaryParagraphs: buildSummaryParagraphs(report),
 		ReliabilityNote:   buildReliabilityNote(report),
@@ -1629,4 +1958,11 @@ func formatRateLimit(rps float64) string {
 		return "unlimited"
 	}
 	return fmt.Sprintf("%.2f", rps)
+}
+
+func formatRampDuration(d time.Duration, concurrency int) string {
+	if d <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("%s (1 → %d workers)", d, concurrency)
 }
