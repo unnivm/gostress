@@ -108,6 +108,7 @@ type TestReport struct {
 	P99Latency        string         `json:"p99_latency"`
 	TotalDataMB       float64        `json:"total_data_mb"`
 	AvgThroughputMB   float64        `json:"avg_throughput_mb_s"`
+	ThroughputPct     float64        `json:"throughput_pct"`
 	ActualDuration    string         `json:"actual_duration"`
 }
 
@@ -131,6 +132,7 @@ type htmlReportView struct {
 	FailurePct        float64
 	TransportErrorPct float64
 	HTTPFailurePct    float64
+	ThroughputPct     float64
 	LatencyBars       []chartBar
 	StatusCodeBars    []chartBar
 	ErrorBars         []chartBar
@@ -804,6 +806,9 @@ func printAndSaveReport(cfg Config, startTime time.Time, summary Summary) error 
 	fmt.Printf("Success Rate:          %10.2f%%\n", summary.SuccessRate)
 	fmt.Printf("Error Rate:            %10.2f%%\n", summary.ErrorRate)
 	fmt.Printf("Requests per Second:   %10.2f\n", summary.RequestsPerSecond)
+	if cfg.RequestsPerSecond > 0 {
+		fmt.Printf("Throughput Util:       %10.2f%%\n", computeThroughputPct(summary.RequestsPerSecond, cfg.RequestsPerSecond))
+	}
 	fmt.Printf("Status Codes:          %s\n", safeDisplayValue(strings.Join(statusCodes, ", ")))
 
 	if len(summary.TransportErrorTypes) > 0 {
@@ -871,6 +876,7 @@ func buildReport(cfg Config, startTime time.Time, headersList []string, summary 
 		P99Latency:        formatDuration(summary.LatencyStats.P99),
 		TotalDataMB:       summary.TotalDataMB,
 		AvgThroughputMB:   summary.AvgThroughputMB,
+		ThroughputPct:     computeThroughputPct(summary.RequestsPerSecond, cfg.RequestsPerSecond),
 		ActualDuration:    formatDuration(summary.ActualDuration),
 	}
 }
@@ -948,6 +954,7 @@ func renderCSVReport(report TestReport) ([]byte, error) {
 		{"p99_latency", report.P99Latency},
 		{"total_data_mb", fmt.Sprintf("%.2f", report.TotalDataMB)},
 		{"avg_throughput_mb_s", fmt.Sprintf("%.2f", report.AvgThroughputMB)},
+		{"throughput_pct", fmt.Sprintf("%.2f", report.ThroughputPct)},
 		{"actual_duration", report.ActualDuration},
 	}
 
@@ -1167,8 +1174,86 @@ func renderHTMLReport(report TestReport) ([]byte, error) {
       height: 100%;
       border-radius: 8px;
       min-width: 4px;
-      transition: width 0.6s cubic-bezier(0.22, 1, 0.36, 1);
+      width: 0;
+      animation: barGrow 0.8s cubic-bezier(0.22, 1, 0.36, 1) forwards;
     }
+    .bar-item:nth-child(1) .bar-fill { animation-delay: 0.1s; }
+    .bar-item:nth-child(2) .bar-fill { animation-delay: 0.2s; }
+    .bar-item:nth-child(3) .bar-fill { animation-delay: 0.3s; }
+    .bar-item:nth-child(4) .bar-fill { animation-delay: 0.4s; }
+    .bar-item:nth-child(5) .bar-fill { animation-delay: 0.5s; }
+    .bar-item:nth-child(6) .bar-fill { animation-delay: 0.6s; }
+    .bar-item:nth-child(7) .bar-fill { animation-delay: 0.7s; }
+    .bar-item:nth-child(8) .bar-fill { animation-delay: 0.8s; }
+    @keyframes barGrow {
+      from { width: 0; }
+      to   { width: var(--bar-w); }
+    }
+
+    .bar-item { opacity: 0; animation: fadeSlideUp 0.5s ease forwards; }
+    .bar-item:nth-child(1) { animation-delay: 0.05s; }
+    .bar-item:nth-child(2) { animation-delay: 0.15s; }
+    .bar-item:nth-child(3) { animation-delay: 0.25s; }
+    .bar-item:nth-child(4) { animation-delay: 0.35s; }
+    .bar-item:nth-child(5) { animation-delay: 0.45s; }
+    .bar-item:nth-child(6) { animation-delay: 0.55s; }
+    .bar-item:nth-child(7) { animation-delay: 0.65s; }
+    .bar-item:nth-child(8) { animation-delay: 0.75s; }
+
+    @keyframes fadeSlideUp {
+      from { opacity: 0; transform: translateY(12px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    .kpi-card { opacity: 0; animation: fadeSlideUp 0.6s ease forwards; }
+    .kpi-card:nth-child(1) { animation-delay: 0.1s; }
+    .kpi-card:nth-child(2) { animation-delay: 0.2s; }
+    .kpi-card:nth-child(3) { animation-delay: 0.3s; }
+    .kpi-card:nth-child(4) { animation-delay: 0.4s; }
+
+    .card { opacity: 0; animation: fadeSlideUp 0.6s ease forwards; }
+    .grid-2 .card:nth-child(1) { animation-delay: 0.15s; }
+    .grid-2 .card:nth-child(2) { animation-delay: 0.3s; }
+    .grid-3 .card:nth-child(1) { animation-delay: 0.15s; }
+    .grid-3 .card:nth-child(2) { animation-delay: 0.3s; }
+    .grid-3 .card:nth-child(3) { animation-delay: 0.45s; }
+
+    .hero { animation: heroReveal 0.8s cubic-bezier(0.22, 1, 0.36, 1) forwards; }
+    @keyframes heroReveal {
+      from { opacity: 0; transform: translateY(20px) scale(0.98); }
+      to   { opacity: 1; transform: translateY(0) scale(1); }
+    }
+
+    .donut-ring { animation: donutDraw 1.2s cubic-bezier(0.22, 1, 0.36, 1) forwards; }
+    @keyframes donutDraw {
+      from { stroke-dasharray: 0 100; }
+    }
+
+    .donut-section { opacity: 0; animation: fadeSlideUp 0.7s ease 0.2s forwards; }
+
+    .legend-item { opacity: 0; animation: fadeSlideUp 0.4s ease forwards; }
+    .legend-item:nth-child(1) { animation-delay: 0.3s; }
+    .legend-item:nth-child(2) { animation-delay: 0.4s; }
+    .legend-item:nth-child(3) { animation-delay: 0.5s; }
+
+    .note-card { opacity: 0; animation: fadeSlideUp 0.5s ease forwards; }
+    .note-card:nth-child(1) { animation-delay: 0.2s; }
+    .note-card:nth-child(2) { animation-delay: 0.35s; }
+    .note-card:nth-child(3) { animation-delay: 0.5s; }
+    .note-card:nth-child(4) { animation-delay: 0.65s; }
+
+    .meta .pill { opacity: 0; animation: fadeSlideUp 0.4s ease forwards; }
+    .meta .pill:nth-child(1) { animation-delay: 0.1s; }
+    .meta .pill:nth-child(2) { animation-delay: 0.15s; }
+    .meta .pill:nth-child(3) { animation-delay: 0.2s; }
+    .meta .pill:nth-child(4) { animation-delay: 0.25s; }
+    .meta .pill:nth-child(5) { animation-delay: 0.3s; }
+    .meta .pill:nth-child(6) { animation-delay: 0.35s; }
+    .meta .pill:nth-child(7) { animation-delay: 0.4s; }
+
+    .table-card { opacity: 0; animation: fadeSlideUp 0.6s ease 0.3s forwards; }
+
+    .footer { opacity: 0; animation: fadeSlideUp 0.5s ease 0.5s forwards; }
     .bar-item .count { font-size: 14px; font-weight: 600; text-align: right; color: var(--muted); }
 
     .gradient-green { background: linear-gradient(90deg, #238636, #3fb950); }
@@ -1216,6 +1301,119 @@ func renderHTMLReport(report TestReport) ([]byte, error) {
       font-size: 13px;
     }
 
+    .print-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 18px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      color: var(--text);
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      font-family: inherit;
+    }
+    .print-btn:hover {
+      background: var(--surface2);
+      border-color: var(--blue);
+      color: var(--blue);
+      transform: translateY(-1px);
+      box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+    }
+    .print-btn:active { transform: translateY(0); }
+
+    @media print {
+      * { animation: none !important; opacity: 1 !important; transform: none !important; }
+      body { background: #fff; color: #1a1a1a; padding: 0; font-size: 11pt; }
+      .container { max-width: 100%; }
+      .hero {
+        background: #fff !important;
+        border: none;
+        border-bottom: 2px solid #e1e4e8;
+        border-radius: 0;
+        padding: 20px 0;
+        page-break-after: avoid;
+      }
+      .hero::before, .hero::after { display: none; }
+      .hero h1 { font-size: 24pt; background: none; -webkit-text-fill-color: #1a1a1a; color: #1a1a1a; }
+      .hero .subtitle { color: #57606a; }
+      .hero .badge { background: #dafbe1; color: #1a7f37; }
+      .hero .badge::before { background: #1a7f37; animation: none; }
+      .print-btn { display: none !important; }
+      .pill { background: #f6f8fa; border-color: #d0d7de; color: #57606a; }
+      .pill b { color: #1a1a1a; }
+
+      .kpi-row { grid-template-columns: repeat(4, 1fr); gap: 10px; page-break-inside: avoid; }
+      .kpi-card {
+        background: #f6f8fa;
+        border-color: #d0d7de;
+        border-radius: 8px;
+        padding: 14px 16px;
+      }
+      .kpi-card .label { color: #57606a; font-size: 9pt; }
+      .kpi-card .value { font-size: 18pt; }
+      .kpi-card .sub { color: #57606a; font-size: 9pt; }
+
+      .grid-2 { grid-template-columns: 1fr 1fr; gap: 14px; page-break-inside: avoid; }
+      .grid-3 { grid-template-columns: 1fr 1fr 1fr; gap: 14px; page-break-inside: avoid; }
+      .card {
+        background: #fff;
+        border-color: #d0d7de;
+        border-radius: 8px;
+        padding: 16px;
+        page-break-inside: avoid;
+      }
+
+      .bar-item { grid-template-columns: 90px 1fr 60px; }
+      .bar-track { background: #f0f0f0; height: 16px; }
+      .bar-fill { height: 100%; width: var(--bar-w) !important; border-radius: 4px; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+      .bar-item .count { color: #1a1a1a; font-size: 10pt; }
+
+      .gradient-green { background: #1a7f37 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+      .gradient-amber { background: #9e6a03 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+      .gradient-red { background: #cf222e !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+      .gradient-blue { background: #0969da !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+      .gradient-purple { background: #8250df !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+      .gradient-cyan { background: #1a7f37 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+
+      .donut-section { page-break-inside: avoid; }
+      .donut-wrap svg { width: 140px; height: 140px; }
+      .legend-label { color: #57606a; }
+      .legend-value { color: #1a1a1a; }
+
+      .note-card {
+        background: #f6f8fa;
+        border-color: #d0d7de;
+        border-radius: 6px;
+        page-break-inside: avoid;
+      }
+      .note-card h3 { color: #0969da; }
+      .note-card p { color: #57606a; }
+
+      .prose { color: #1a1a1a; font-size: 10pt; }
+
+      .table-card {
+        background: #fff;
+        border-color: #d0d7de;
+        border-radius: 8px;
+        page-break-inside: avoid;
+      }
+      .table-card th { background: #f6f8fa; color: #57606a; border-color: #d0d7de; }
+      .table-card td { border-color: #d0d7de; color: #1a1a1a; }
+
+      .config-row { border-color: #d0d7de; }
+      .config-row .key { color: #57606a; }
+      .config-row .val { color: #1a1a1a; }
+
+      .footer { border-color: #d0d7de; color: #57606a; margin-top: 20px; padding-top: 12px; }
+
+      .section-title h2 { color: #1a1a1a; }
+      .section-title .tag { background: #ddf4ff; color: #0969da; }
+    }
+
     @media (max-width: 900px) {
       body { padding: 16px; }
       .hero { padding: 28px 20px; }
@@ -1231,7 +1429,19 @@ func renderHTMLReport(report TestReport) ([]byte, error) {
 <body>
   <div class="container">
     <section class="hero">
-      <div class="badge">Load Test Complete</div>
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;">
+        <div>
+          <div class="badge">Load Test Complete</div>
+        </div>
+        <button onclick="window.print()" class="print-btn">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="4 6 4 1 12 1 12 6"/>
+            <path d="M4 11H2a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v4a1 1 0 0 1-1 1h-2"/>
+            <rect x="4" y="9" width="8" height="6" rx="0.5"/>
+          </svg>
+          Export PDF
+        </button>
+      </div>
       <h1>Performance Report</h1>
       <p class="subtitle">{{.SummaryHeadline}}</p>
       <div class="meta">
@@ -1256,11 +1466,11 @@ func renderHTMLReport(report TestReport) ([]byte, error) {
         <div class="value" style="color:var(--green)">{{printf "%.1f%%" .Report.SuccessRate}}</div>
         <div class="sub">{{.Report.SuccessRequests}} successful</div>
       </div>
-      <div class="kpi-card">
+        <div class="kpi-card">
         <div class="accent" style="background:var(--purple)"></div>
         <div class="label">Throughput</div>
         <div class="value" style="color:var(--purple)">{{printf "%.1f" .Report.RequestsPerSecond}}</div>
-        <div class="sub">requests / second</div>
+        <div class="sub">requests / second{{if gt .Report.ThroughputPct 0.0}} · <span style="color:var(--green)">{{printf "%.1f%%" .Report.ThroughputPct}} utilization</span>{{end}}</div>
       </div>
       <div class="kpi-card">
         <div class="accent" style="background:var(--amber)"></div>
@@ -1280,16 +1490,16 @@ func renderHTMLReport(report TestReport) ([]byte, error) {
           <div class="donut-wrap">
             <svg width="180" height="180" viewBox="0 0 180 180">
               <circle cx="90" cy="90" r="70" fill="none" stroke="var(--surface2)" stroke-width="16"/>
-              <circle cx="90" cy="90" r="70" fill="none" stroke="var(--green)" stroke-width="16"
+              <circle class="donut-ring" cx="90" cy="90" r="70" fill="none" stroke="var(--green)" stroke-width="16"
                 stroke-dasharray="{{printf "%.1f" .SuccessPct}} {{printf "%.1f" (sub 100.0 .SuccessPct)}}"
                 stroke-dashoffset="25" stroke-linecap="round" transform="rotate(-90 90 90)"/>
               {{if gt .HTTPFailurePct 0.0}}
-              <circle cx="90" cy="90" r="70" fill="none" stroke="var(--amber)" stroke-width="16"
+              <circle class="donut-ring" cx="90" cy="90" r="70" fill="none" stroke="var(--amber)" stroke-width="16"
                 stroke-dasharray="{{printf "%.1f" .HTTPFailurePct}} {{printf "%.1f" (sub 100.0 .HTTPFailurePct)}}"
                 stroke-dashoffset="{{printf "%.1f" (sub 25.0 .SuccessPct)}}" stroke-linecap="round" transform="rotate(-90 90 90)"/>
               {{end}}
               {{if gt .TransportErrorPct 0.0}}
-              <circle cx="90" cy="90" r="70" fill="none" stroke="var(--red)" stroke-width="16"
+              <circle class="donut-ring" cx="90" cy="90" r="70" fill="none" stroke="var(--red)" stroke-width="16"
                 stroke-dasharray="{{printf "%.1f" .TransportErrorPct}} {{printf "%.1f" (sub 100.0 .TransportErrorPct)}}"
                 stroke-dashoffset="{{printf "%.1f" (sub 25.0 (add .SuccessPct .HTTPFailurePct))}}" stroke-linecap="round" transform="rotate(-90 90 90)"/>
               {{end}}
@@ -1345,10 +1555,15 @@ func renderHTMLReport(report TestReport) ([]byte, error) {
           {{range .LatencyBars}}
           <div class="bar-item">
             <div class="label">{{.Label}}</div>
-            <div class="bar-track"><div class="bar-fill {{.Tone}}" style="width: {{printf "%.1f" .Width}}%"></div></div>
+            <div class="bar-track"><div class="bar-fill {{.Tone}}" style="--bar-w: {{printf "%.1f" .Width}}%"></div></div>
             <div class="count">{{.Value}}</div>
           </div>
           {{end}}
+        </div>
+        <div style="margin-top:16px;padding:16px;background:var(--surface2);border-radius:8px;font-size:13px;line-height:1.6;color:var(--text);">
+          <p style="margin:0 0 8px 0;"><strong>p50 (Median)</strong> — Half of all requests completed faster than this value. This is the most representative "typical" latency your users experience.</p>
+          <p style="margin:0 0 8px 0;"><strong>p95</strong> — 95% of requests completed faster than this. The remaining 5% took longer. Use this to understand how your slowest users are impacted under load.</p>
+          <p style="margin:0;"><strong>p99</strong> — 99% of requests completed faster than this. The worst 1% of requests. This is your tail latency and often determines SLA compliance and user perception of reliability.</p>
         </div>
       </div>
 
@@ -1361,7 +1576,7 @@ func renderHTMLReport(report TestReport) ([]byte, error) {
           {{range .StatusCodeBars}}
           <div class="bar-item">
             <div class="label">{{.Label}}</div>
-            <div class="bar-track"><div class="bar-fill {{.Tone}}" style="width: {{printf "%.1f" .Width}}%"></div></div>
+            <div class="bar-track"><div class="bar-fill {{.Tone}}" style="--bar-w: {{printf "%.1f" .Width}}%"></div></div>
             <div class="count">{{.Value}}</div>
           </div>
           {{else}}
@@ -1381,7 +1596,7 @@ func renderHTMLReport(report TestReport) ([]byte, error) {
           {{range .ErrorBars}}
           <div class="bar-item">
             <div class="label">{{.Label}}</div>
-            <div class="bar-track"><div class="bar-fill {{.Tone}}" style="width: {{printf "%.1f" .Width}}%"></div></div>
+            <div class="bar-track"><div class="bar-fill {{.Tone}}" style="--bar-w: {{printf "%.1f" .Width}}%"></div></div>
             <div class="count">{{.Value}}</div>
           </div>
           {{else}}
@@ -1405,6 +1620,18 @@ func renderHTMLReport(report TestReport) ([]byte, error) {
             <div style="font-size:28px;font-weight:700;color:var(--cyan);">{{printf "%.2f" .Report.AvgThroughputMB}} <span style="font-size:14px;color:var(--muted);">MB/s</span></div>
           </div>
         </div>
+        {{if gt .Report.ThroughputPct 0.0}}
+        <div class="note-card" style="margin-bottom:12px;">
+          <h3>Utilization</h3>
+          <div style="display:flex;align-items:baseline;gap:8px;">
+            <div style="font-size:28px;font-weight:700;color:var(--green);">{{printf "%.1f" .Report.ThroughputPct}}%</div>
+            <div style="color:var(--muted);font-size:14px;">of configured RPS limit ({{printf "%.0f" .Report.RateLimitRPS}})</div>
+          </div>
+          <div style="margin-top:10px;height:8px;background:var(--surface2);border-radius:4px;overflow:hidden;">
+            <div style="height:100%;width:{{printf "%.1f" (minf .Report.ThroughputPct 100.0)}}%;background:linear-gradient(90deg,#238636,#3fb950);border-radius:4px;"></div>
+          </div>
+        </div>
+        {{end}}
         <div class="note-card">
           <h3>Analysis</h3>
           <p>{{.ThroughputNote}}</p>
@@ -1478,6 +1705,31 @@ func renderHTMLReport(report TestReport) ([]byte, error) {
       Generated by <b>gostress</b> at {{.Report.StartTime}}
     </div>
   </div>
+  <script>
+    document.addEventListener('DOMContentLoaded', function() {
+      document.querySelectorAll('.kpi-card .value').forEach(function(el) {
+        var text = el.textContent.trim();
+        var match = text.match(/^([\d.]+)(.*)/);
+        if (!match) return;
+        var target = parseFloat(match[1]);
+        var suffix = match[2];
+        if (target === 0 || isNaN(target)) return;
+        var start = performance.now();
+        var duration = 900;
+        function step(now) {
+          var progress = Math.min((now - start) / duration, 1);
+          var ease = 1 - Math.pow(1 - progress, 3);
+          var current = target * ease;
+          if (target >= 100) el.textContent = Math.round(current) + suffix;
+          else el.textContent = current.toFixed(1) + suffix;
+          if (progress < 1) requestAnimationFrame(step);
+          else el.textContent = text;
+        }
+        el.textContent = '0' + suffix;
+        requestAnimationFrame(step);
+      });
+    });
+  </script>
 </body>
 </html>`
 
@@ -1487,6 +1739,7 @@ func renderHTMLReport(report TestReport) ([]byte, error) {
 		"formatRate":  formatRateLimit,
 		"sub":         func(a, b float64) float64 { return a - b },
 		"add":         func(a, b float64) float64 { return a + b },
+		"minf":        func(a, b float64) float64 { if a < b { return a }; return b },
 	}).Parse(reportTemplate)
 	if err != nil {
 		return nil, err
@@ -1518,6 +1771,7 @@ func buildHTMLReportView(report TestReport) htmlReportView {
 		FailurePct:        percentOf(report.FailedRequests, total),
 		TransportErrorPct: transportErrorPct,
 		HTTPFailurePct:    httpFailurePct,
+		ThroughputPct:     report.ThroughputPct,
 		LatencyBars: []chartBar{
 			durationBar("p50", report.P50Latency, report.MaxLatency, "gradient-blue"),
 			durationBar("Average", report.AverageLatency, report.MaxLatency, "gradient-green"),
@@ -1958,6 +2212,13 @@ func formatRateLimit(rps float64) string {
 		return "unlimited"
 	}
 	return fmt.Sprintf("%.2f", rps)
+}
+
+func computeThroughputPct(observed, limit float64) float64 {
+	if limit <= 0 {
+		return 0
+	}
+	return (observed / limit) * 100
 }
 
 func formatRampDuration(d time.Duration, concurrency int) string {

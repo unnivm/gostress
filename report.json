@@ -1,5 +1,5 @@
 {
-  "start_time": "2026-08-26 15:23:03",
+  "start_time": "2026-08-26 21:30:53",
   "url": "http://localhost:8080/examples/servlets/servlet/HelloWorldExample",
   "concurrency": 1500,
   "duration": "2m0s",
@@ -7,35 +7,34 @@
   "payload": "",
   "headers": null,
   "success_status": "200-399",
-  "rate_limit_rps": 0,
+  "rate_limit_rps": 10000,
   "ramp_duration": "1m0s (1 → 1500 workers)",
   "output_formats": [
     "json",
     "html"
   ],
   "status_codes": {
-    "200": 1312176
+    "200": 1185938
   },
   "transport_error_types": {
-    "Get \"http://localhost:8080/examples/servlets/servlet/HelloWorldExample\": dial tcp [::1]:8080: connect: operation timed out": 9,
-    "Get \"http://localhost:8080/examples/servlets/servlet/HelloWorldExample\": dial tcp [::1]:8080: connect: resource temporarily unavailable": 5990,
-    "deadline_exceeded": 1483
+    "deadline_exceeded": 9
   },
-  "total_requests": 1319658,
-  "failed_requests": 7482,
-  "transport_errors": 7482,
+  "total_requests": 1185947,
+  "failed_requests": 9,
+  "transport_errors": 9,
   "http_failures": 0,
-  "success_requests": 1312176,
-  "success_rate": 99.43303492268451,
-  "error_rate": 0.5669650773154863,
-  "requests_per_second": 10977.367320439591,
-  "min_latency": "22.916µs",
-  "max_latency": "17.248522792s",
-  "average_latency": "25.382139ms",
-  "p50_latency": "42.833µs",
-  "p95_latency": "16.383458ms",
-  "p99_latency": "749.251792ms",
-  "total_data_mb": 484.28736877441406,
-  "avg_throughput_mb_s": 4.028468236229334,
-  "actual_duration": "2m0.216256s"
+  "success_requests": 1185938,
+  "success_rate": 99.99924111279846,
+  "error_rate": 0.0007588872015359877,
+  "requests_per_second": 9880.18986699635,
+  "min_latency": "22.542µs",
+  "max_latency": "20.829125ms",
+  "average_latency": "50.118µs",
+  "p50_latency": "43µs",
+  "p95_latency": "70.375µs",
+  "p99_latency": "274µs",
+  "total_data_mb": 437.6964626312256,
+  "avg_throughput_mb_s": 3.646473370993123,
+  "throughput_pct": 98.8018986699635,
+  "actual_duration": "2m0.03281475s"
 }

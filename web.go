@@ -64,8 +64,9 @@ type dashboardPageData struct {
 	ReportJSON        string
 	SuccessPct        float64
 	HTTPFailurePct    float64
-	TransportErrorPct float64
-	SummaryHeadline   string
+		TransportErrorPct float64
+		ThroughputPct     float64
+		SummaryHeadline   string
 	SummaryParagraphs []string
 	LatencyBars       []chartBar
 	StatusCodeBars    []chartBar
@@ -337,7 +338,7 @@ func (a *webApp) handleLogout(w http.ResponseWriter, r *http.Request) {
 func (a *webApp) handleDashboard(w http.ResponseWriter, r *http.Request, email string) {
 	report, source := a.snapshotReport()
 	data := dashboardPageData{
-		Title:       "Dashboard",
+		Title:       "Gostress Analytics Dashboard",
 		CurrentUser: email,
 		HasReport:   report != nil,
 		ReportSource: func() string {
@@ -358,6 +359,7 @@ func (a *webApp) handleDashboard(w http.ResponseWriter, r *http.Request, email s
 		data.SuccessPct = view.SuccessPct
 		data.HTTPFailurePct = view.HTTPFailurePct
 		data.TransportErrorPct = view.TransportErrorPct
+		data.ThroughputPct = view.ThroughputPct
 		data.SummaryHeadline = view.SummaryHeadline
 		data.SummaryParagraphs = view.SummaryParagraphs
 		data.LatencyBars = view.LatencyBars
@@ -587,7 +589,7 @@ const webTemplateSource = `
         linear-gradient(180deg, #faf7f1 0%, #f1e8dc 100%);
     }
     a { color: inherit; }
-    .container { max-width: 1220px; margin: 0 auto; padding: 28px; }
+    .container { max-width: 1380px; margin: 0 auto; padding: 28px; }
     .hero {
       background: linear-gradient(135deg, rgba(17,36,58,0.96), rgba(15,118,110,0.92));
       color: #f8fbff;
@@ -776,10 +778,289 @@ const webTemplateSource = `
       font-family: Menlo, Monaco, monospace;
       font-size: 12px;
     }
+    .admin-shell {
+      display: grid;
+      grid-template-columns: 280px minmax(0, 1fr);
+      gap: 22px;
+      align-items: start;
+    }
+    .sidebar {
+      position: sticky;
+      top: 22px;
+      background: linear-gradient(180deg, rgba(17,36,58,0.98), rgba(12,94,87,0.96));
+      color: #f8fbff;
+      border-radius: 28px;
+      padding: 24px 20px;
+      box-shadow: var(--shadow);
+      min-height: calc(100vh - 56px);
+    }
+    .brand {
+      display: grid;
+      gap: 6px;
+      padding-bottom: 18px;
+      border-bottom: 1px solid rgba(255,255,255,0.12);
+      margin-bottom: 18px;
+    }
+    .brand-mark {
+      width: 52px;
+      height: 52px;
+      border-radius: 16px;
+      display: grid;
+      place-items: center;
+      background: linear-gradient(135deg, rgba(255,255,255,0.18), rgba(255,255,255,0.06));
+      font-weight: bold;
+      letter-spacing: 0.08em;
+    }
+    .brand h1 {
+      margin: 0;
+      font-size: 24px;
+      color: #ffffff;
+    }
+    .brand p {
+      margin: 0;
+      color: rgba(248,251,255,0.72);
+      font-size: 14px;
+      line-height: 1.5;
+    }
+    .nav-block { margin-top: 18px; }
+    .nav-label {
+      font-size: 12px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: rgba(248,251,255,0.48);
+      margin-bottom: 10px;
+    }
+    .side-nav {
+      display: grid;
+      gap: 8px;
+    }
+    .side-link {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      text-decoration: none;
+      padding: 12px 14px;
+      border-radius: 16px;
+      color: rgba(248,251,255,0.9);
+      background: rgba(255,255,255,0.05);
+      border: 1px solid rgba(255,255,255,0.06);
+      transition: transform 120ms ease, background 120ms ease;
+    }
+    .side-link:hover {
+      transform: translateX(2px);
+      background: rgba(255,255,255,0.11);
+    }
+    .side-link small {
+      color: rgba(248,251,255,0.56);
+      font-size: 12px;
+    }
+    .side-card {
+      margin-top: 22px;
+      padding: 16px;
+      border-radius: 18px;
+      background: rgba(255,255,255,0.08);
+      border: 1px solid rgba(255,255,255,0.08);
+    }
+    .side-card h3 {
+      margin: 0 0 8px;
+      color: #fff;
+      font-size: 16px;
+    }
+    .side-card p {
+      margin: 0;
+      font-size: 14px;
+      line-height: 1.6;
+      color: rgba(248,251,255,0.72);
+    }
+    .side-actions {
+      display: grid;
+      gap: 10px;
+      margin-top: 16px;
+    }
+    .side-actions .btn {
+      width: 100%;
+      justify-content: space-between;
+    }
+    .main-stage {
+      display: grid;
+      gap: 20px;
+    }
+    .masthead {
+      background: linear-gradient(135deg, rgba(255,255,255,0.95), rgba(255,250,244,0.88));
+      border: 1px solid rgba(214,222,231,0.9);
+      border-radius: 28px;
+      box-shadow: var(--shadow);
+      padding: 24px 26px;
+      position: relative;
+      overflow: hidden;
+    }
+    .masthead::before {
+      content: "";
+      position: absolute;
+      right: -60px;
+      top: -60px;
+      width: 220px;
+      height: 220px;
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(15,118,110,0.13), transparent 68%);
+    }
+    .masthead-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 18px;
+      align-items: start;
+      position: relative;
+      z-index: 1;
+    }
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      border-radius: 999px;
+      padding: 7px 12px;
+      background: var(--sea-soft);
+      color: var(--sea);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      margin-bottom: 12px;
+    }
+    .masthead h1 {
+      margin: 0 0 10px;
+      font-size: 38px;
+      color: var(--midnight);
+    }
+    .masthead p {
+      margin: 0;
+      max-width: 760px;
+      line-height: 1.75;
+      color: var(--muted);
+    }
+    .masthead-actions {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+    .status-strip {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 14px;
+    }
+    .status-card {
+      background: rgba(255,255,255,0.95);
+      border: 1px solid rgba(214,222,231,0.92);
+      border-radius: 20px;
+      padding: 18px;
+      box-shadow: var(--shadow);
+    }
+    .status-card .meta {
+      color: var(--muted);
+      font-size: 13px;
+      margin: 0 0 8px;
+    }
+    .status-card strong {
+      display: block;
+      font-size: 32px;
+      color: var(--midnight);
+      margin-bottom: 6px;
+    }
+    .admin-grid {
+      display: grid;
+      grid-template-columns: 1.35fr 0.95fr;
+      gap: 18px;
+    }
+    .insight-card {
+      background: rgba(255,255,255,0.95);
+      border: 1px solid rgba(214,222,231,0.92);
+      border-radius: 24px;
+      padding: 22px;
+      box-shadow: var(--shadow);
+    }
+    .insight-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 12px;
+      margin-bottom: 18px;
+    }
+    .insight-head h2, .insight-head h3 {
+      margin: 0;
+    }
+    .insight-head p {
+      margin: 6px 0 0;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.6;
+    }
+    .insight-badge {
+      border-radius: 999px;
+      padding: 8px 12px;
+      font-size: 12px;
+      background: #eef5fb;
+      color: #28527a;
+      white-space: nowrap;
+    }
+    .mini-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+    .mini-stat {
+      padding: 16px;
+      border-radius: 18px;
+      background: linear-gradient(180deg, rgba(250,251,253,1), rgba(243,247,251,0.92));
+      border: 1px solid #e1e7ee;
+    }
+    .mini-stat strong {
+      display: block;
+      margin-top: 8px;
+      font-size: 24px;
+      color: var(--midnight);
+    }
+    .mini-stat span {
+      font-size: 13px;
+      color: var(--muted);
+    }
+    .sparkline {
+      margin-top: 12px;
+      display: flex;
+      align-items: end;
+      gap: 8px;
+      height: 140px;
+      padding: 14px 10px 10px;
+      border-radius: 18px;
+      background: linear-gradient(180deg, rgba(224,244,240,0.72), rgba(255,255,255,0.92));
+      border: 1px solid #dde7e5;
+    }
+    .sparkline .spark-bar {
+      flex: 1;
+      border-radius: 12px 12px 4px 4px;
+      min-height: 10px;
+      background: linear-gradient(180deg, #0f766e, #49c5b8);
+      box-shadow: inset 0 -10px 16px rgba(255,255,255,0.12);
+    }
+    .chart-surface {
+      padding: 16px;
+      border-radius: 20px;
+      background: linear-gradient(180deg, rgba(247,250,252,0.98), rgba(255,255,255,0.92));
+      border: 1px solid #e0e8ef;
+    }
+    .section-anchor {
+      scroll-margin-top: 24px;
+    }
     @media (max-width: 960px) {
-      .auth-grid, .dashboard-grid, .two-col, .donut-wrap { grid-template-columns: 1fr; }
+      .auth-grid, .dashboard-grid, .two-col, .donut-wrap, .admin-grid, .status-strip, .masthead-grid, .admin-shell { grid-template-columns: 1fr; }
       .chart-row { grid-template-columns: 1fr; }
       .donut { margin: 0 auto; }
+      .sidebar {
+        position: static;
+        min-height: auto;
+      }
+      .masthead-actions {
+        justify-content: flex-start;
+      }
     }
   </style>
 </head>
@@ -891,200 +1172,345 @@ const webTemplateSource = `
 
 {{define "dashboard"}}
 {{template "shell_start" .}}
-<section class="hero">
-  <h1>Protected Analytics Dashboard</h1>
-  <p>{{if .HasReport}}{{.SummaryHeadline}}{{else}}Sign-in protection is active. Load or paste report JSON to populate the dashboard charts and executive summary.{{end}}</p>
-</section>
-
-<div class="toolbar">
-  <div class="meta-strip">
-    <span class="tag">Signed in as {{.CurrentUser}}</span>
-    <span class="tag">Source: {{.ReportSource}}</span>
-    <span class="tag">Imported at: {{defaultText .ImportedAt "(not available)"}}</span>
-  </div>
-  <div class="btn-row">
-    <a class="btn btn-secondary" href="/api/report">JSON API</a>
-    <a class="btn btn-secondary" href="/logout">Logout</a>
-  </div>
-</div>
-
-{{if .HasReport}}
-<section class="kpi-grid">
-  <div class="kpi">
-    <div class="muted">Total requests</div>
-    <div class="value">{{.Report.TotalRequests}}</div>
-    <div class="muted">Observed over {{.Report.ActualDuration}}</div>
-  </div>
-  <div class="kpi">
-    <div class="muted">Success rate</div>
-    <div class="value">{{printf "%.2f%%" .Report.SuccessRate}}</div>
-    <div class="muted">{{.Report.SuccessRequests}} successful requests</div>
-  </div>
-  <div class="kpi">
-    <div class="muted">Requests per second</div>
-    <div class="value">{{formatFloat .Report.RequestsPerSecond}}</div>
-    <div class="muted">Throughput at application edge</div>
-  </div>
-  <div class="kpi">
-    <div class="muted">Average latency</div>
-    <div class="value">{{.Report.AverageLatency}}</div>
-    <div class="muted">p95 {{.Report.P95Latency}} • p99 {{.Report.P99Latency}}</div>
-  </div>
-</section>
-
-<section class="grid dashboard-grid" style="margin-top:18px;">
-  <div class="panel">
-    <h2>Executive Summary</h2>
-    <div class="prose">
-      {{range .SummaryParagraphs}}<p>{{.}}</p>{{end}}
+<div class="admin-shell">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark">GS</div>
+      <h1>Gostress</h1>
+      <p>Operational analytics console for protected report review, imports, and performance storytelling.</p>
     </div>
-  </div>
-  <div class="panel">
-    <h2>Reliability Donut</h2>
-    <div class="donut-wrap">
-      <div class="donut" style="background: conic-gradient(var(--sea) 0 {{printf "%.2f" .SuccessPct}}%, var(--ember) {{printf "%.2f" .SuccessPct}}% {{printf "%.2f" (add .SuccessPct .HTTPFailurePct)}}%, var(--rose) {{printf "%.2f" (add .SuccessPct .HTTPFailurePct)}}% 100%);">
-        <div class="donut-center">
+
+    <div class="nav-block">
+      <div class="nav-label">Navigation</div>
+      <nav class="side-nav">
+        <a class="side-link" href="#overview"><span>Overview</span><small>KPI cards</small></a>
+        <a class="side-link" href="#reliability"><span>Reliability</span><small>Success mix</small></a>
+        <a class="side-link" href="#latency"><span>Latency</span><small>Distribution</small></a>
+        <a class="side-link" href="#status-codes"><span>Status Codes</span><small>HTTP map</small></a>
+        <a class="side-link" href="#data-ops"><span>Data Ops</span><small>JSON import</small></a>
+      </nav>
+    </div>
+
+    <div class="nav-block">
+      <div class="nav-label">Context</div>
+      <div class="side-card">
+        <h3>Signed In</h3>
+        <p>{{.CurrentUser}}</p>
+      </div>
+      <div class="side-card">
+        <h3>Report Source</h3>
+        <p>{{.ReportSource}}</p>
+      </div>
+      <div class="side-card">
+        <h3>Imported At</h3>
+        <p>{{defaultText .ImportedAt "(not available)"}}</p>
+      </div>
+    </div>
+
+    <div class="side-actions">
+      <a class="btn btn-secondary" href="/api/report">Open JSON API</a>
+      <a class="btn btn-secondary" href="/logout">Logout</a>
+    </div>
+  </aside>
+
+  <main class="main-stage">
+    <section class="masthead">
+      <div class="masthead-grid">
+        <div>
+          <span class="eyebrow">Admin Dashboard</span>
+          <h1>Gostress Analytics Dashboard</h1>
+          <p>{{if .HasReport}}{{.SummaryHeadline}}{{else}}Sign-in protection is active. Load or paste report JSON to populate the dashboard charts, executive summary, and operational scorecards.{{end}}</p>
+        </div>
+        <div class="masthead-actions">
+          <span class="tag">Protected session</span>
+          <span class="tag">{{if .HasReport}}Live report loaded{{else}}Waiting for report{{end}}</span>
+        </div>
+      </div>
+    </section>
+
+    {{if .HasReport}}
+    <section id="overview" class="section-anchor status-strip">
+      <div class="status-card">
+        <div class="meta">Total Requests</div>
+        <strong>{{.Report.TotalRequests}}</strong>
+        <div class="muted">Across {{.Report.ActualDuration}}</div>
+      </div>
+      <div class="status-card">
+        <div class="meta">Success Rate</div>
+        <strong>{{printf "%.2f%%" .Report.SuccessRate}}</strong>
+        <div class="muted">{{.Report.SuccessRequests}} successful responses</div>
+      </div>
+      <div class="status-card">
+        <div class="meta">Request Throughput</div>
+        <strong>{{formatFloat .Report.RequestsPerSecond}}</strong>
+        <div class="muted">Requests per second observed</div>
+      </div>
+      <div class="status-card">
+        <div class="meta">Average Latency</div>
+        <strong>{{.Report.AverageLatency}}</strong>
+        <div class="muted">p95 {{.Report.P95Latency}} • p99 {{.Report.P99Latency}}</div>
+      </div>
+    </section>
+
+    <section class="admin-grid">
+      <section class="insight-card">
+        <div class="insight-head">
           <div>
-            <strong>{{printf "%.2f%%" .Report.SuccessRate}}</strong>
-            <span class="muted">success</span>
+            <h2>Executive Summary</h2>
+            <p>High-signal narrative for engineering, SRE, and product review.</p>
+          </div>
+          <span class="insight-badge">Narrative Analysis</span>
+        </div>
+        <div class="prose">
+          {{range .SummaryParagraphs}}<p>{{.}}</p>{{end}}
+        </div>
+        <div class="sparkline" aria-hidden="true">
+          {{range .LatencyBars}}
+          <div class="spark-bar" style="height: {{printf "%.2f" .Width}}%;"></div>
+          {{end}}
+          {{range .StatusCodeBars}}
+          <div class="spark-bar" style="height: {{printf "%.2f" .Width}}%; background: linear-gradient(180deg, #245b93, #80baf1);"></div>
+          {{end}}
+        </div>
+      </section>
+
+      <section id="reliability" class="insight-card section-anchor">
+        <div class="insight-head">
+          <div>
+            <h2>Reliability Center</h2>
+            <p>Failure composition, transport pressure, and response health.</p>
+          </div>
+          <span class="insight-badge">Health Mix</span>
+        </div>
+        <div class="donut-wrap">
+          <div class="donut" style="background: conic-gradient(var(--sea) 0 {{printf "%.2f" .SuccessPct}}%, var(--ember) {{printf "%.2f" .SuccessPct}}% {{printf "%.2f" (add .SuccessPct .HTTPFailurePct)}}%, var(--rose) {{printf "%.2f" (add .SuccessPct .HTTPFailurePct)}}% 100%);">
+            <div class="donut-center">
+              <div>
+                <strong>{{printf "%.2f%%" .Report.SuccessRate}}</strong>
+                <span class="muted">success</span>
+              </div>
+            </div>
+          </div>
+          <div>
+            <div class="stack">
+              <div class="success" style="width: {{printf "%.2f" .SuccessPct}}%"></div>
+              <div class="http" style="width: {{printf "%.2f" .HTTPFailurePct}}%"></div>
+              <div class="transport" style="width: {{printf "%.2f" .TransportErrorPct}}%"></div>
+            </div>
+            <div class="legend">
+              <span class="success">Success {{printf "%.2f%%" .SuccessPct}}</span>
+              <span class="http">HTTP failures {{printf "%.2f%%" .HTTPFailurePct}}</span>
+              <span class="transport">Transport errors {{printf "%.2f%%" .TransportErrorPct}}</span>
+            </div>
+            <p class="muted">{{.ReliabilityNote}}</p>
           </div>
         </div>
-      </div>
-      <div>
-        <div class="stack">
-          <div class="success" style="width: {{printf "%.2f" .SuccessPct}}%"></div>
-          <div class="http" style="width: {{printf "%.2f" .HTTPFailurePct}}%"></div>
-          <div class="transport" style="width: {{printf "%.2f" .TransportErrorPct}}%"></div>
+        <div class="mini-grid" style="margin-top:16px;">
+          <div class="mini-stat">
+            <span>HTTP failures</span>
+            <strong>{{.Report.HTTPFailures}}</strong>
+          </div>
+          <div class="mini-stat">
+            <span>Transport errors</span>
+            <strong>{{.Report.TransportErrors}}</strong>
+          </div>
+          <div class="mini-stat">
+            <span>Success policy</span>
+            <strong><code>{{.Report.SuccessStatusSpec}}</code></strong>
+          </div>
+          <div class="mini-stat">
+            <span>Rate shaping</span>
+            <strong>{{if gt .Report.RateLimitRPS 0.0}}{{formatFloat .Report.RateLimitRPS}} RPS{{else}}Unlimited{{end}}</strong>
+          </div>
         </div>
-        <div class="legend">
-          <span class="success">Success {{printf "%.2f%%" .SuccessPct}}</span>
-          <span class="http">HTTP failures {{printf "%.2f%%" .HTTPFailurePct}}</span>
-          <span class="transport">Transport errors {{printf "%.2f%%" .TransportErrorPct}}</span>
+      </section>
+    </section>
+
+    <section class="admin-grid">
+      <section id="latency" class="insight-card section-anchor">
+        <div class="insight-head">
+          <div>
+            <h2>Latency Observatory</h2>
+            <p>Percentile spread plotted against the worst observed request.</p>
+          </div>
+          <span class="insight-badge">Tail Behavior</span>
         </div>
-        <p class="muted">{{.ReliabilityNote}}</p>
+        <div class="chart-surface">
+          <div class="chart">
+            {{range .LatencyBars}}
+            <div class="chart-row">
+              <div><strong>{{.Label}}</strong></div>
+              <div class="track"><div class="fill {{.Tone}}" style="width: {{printf "%.2f" .Width}}%"></div></div>
+              <div class="muted">{{.Value}}</div>
+            </div>
+            {{end}}
+          </div>
+        </div>
+        <p class="muted" style="margin-top:16px;">{{.LatencyNote}}</p>
+      </section>
+
+      <section class="insight-card">
+        <div class="insight-head">
+          <div>
+            <h2>Performance Brief</h2>
+            <p>Throughput, transfer volume, and operating context at a glance.</p>
+          </div>
+          <span class="insight-badge">Ops Notes</span>
+        </div>
+        <div class="mini-grid">
+          <div class="mini-stat">
+            <span>Total data moved</span>
+            <strong>{{formatFloat .Report.TotalDataMB}} MB</strong>
+          </div>
+          <div class="mini-stat">
+            <span>Average throughput</span>
+            <strong>{{formatFloat .Report.AvgThroughputMB}} MB/s</strong>
+          </div>
+          <div class="mini-stat">
+            <span>RPS utilization</span>
+            <strong>{{if gt .Report.ThroughputPct 0.0}}{{formatFloat .Report.ThroughputPct}}%{{else}}N/A{{end}}</strong>
+          </div>
+          <div class="mini-stat">
+            <span>Configured duration</span>
+            <strong>{{.Report.Duration}}</strong>
+          </div>
+          <div class="mini-stat">
+            <span>Actual duration</span>
+            <strong>{{.Report.ActualDuration}}</strong>
+          </div>
+        </div>
+        <div class="prose" style="margin-top:16px;">
+          <p>{{.ThroughputNote}}</p>
+          <p><strong>Source:</strong> {{.ReportSource}}</p>
+          <p><strong>Imported at:</strong> {{defaultText .ImportedAt "(not available)"}}</p>
+        </div>
+      </section>
+    </section>
+
+    <section class="admin-grid">
+      <section id="status-codes" class="insight-card section-anchor">
+        <div class="insight-head">
+          <div>
+            <h2>Status Code Distribution</h2>
+            <p>Professional breakdown of the response mix returned by the target.</p>
+          </div>
+          <span class="insight-badge">HTTP Map</span>
+        </div>
+        <div class="chart-surface">
+          <div class="chart">
+            {{range .StatusCodeBars}}
+            <div class="chart-row">
+              <div><strong>{{.Label}}</strong></div>
+              <div class="track"><div class="fill tone-sea" style="width: {{printf "%.2f" .Width}}%"></div></div>
+              <div class="muted">{{.Value}}</div>
+            </div>
+            {{else}}
+            <div class="empty">No HTTP response data is available yet.</div>
+            {{end}}
+          </div>
+        </div>
+        <table style="margin-top:18px;">
+          <thead><tr><th>Status</th><th>Count</th></tr></thead>
+          <tbody>
+            {{range .StatusCodes}}
+            <tr><td>{{.Key}}</td><td>{{.Value}}</td></tr>
+            {{else}}
+            <tr><td colspan="2">No status code data loaded</td></tr>
+            {{end}}
+          </tbody>
+        </table>
+      </section>
+
+      <section class="insight-card">
+        <div class="insight-head">
+          <div>
+            <h2>Transport Error Distribution</h2>
+            <p>Network-level failures isolated from application response codes.</p>
+          </div>
+          <span class="insight-badge">Infra Signals</span>
+        </div>
+        <div class="chart-surface">
+          <div class="chart">
+            {{range .ErrorBars}}
+            <div class="chart-row">
+              <div><strong>{{.Label}}</strong></div>
+              <div class="track"><div class="fill tone-rose" style="width: {{printf "%.2f" .Width}}%"></div></div>
+              <div class="muted">{{.Value}}</div>
+            </div>
+            {{else}}
+            <div class="empty">No transport errors were recorded for this report.</div>
+            {{end}}
+          </div>
+        </div>
+        <table style="margin-top:18px;">
+          <thead><tr><th>Error</th><th>Count</th></tr></thead>
+          <tbody>
+            {{range .ErrorTypes}}
+            <tr><td>{{.Key}}</td><td>{{.Value}}</td></tr>
+            {{else}}
+            <tr><td colspan="2">No transport errors loaded</td></tr>
+            {{end}}
+          </tbody>
+        </table>
+      </section>
+    </section>
+
+    <section id="data-ops" class="insight-card section-anchor">
+      <div class="insight-head">
+        <div>
+          <h2>Data Operations</h2>
+          <p>Paste raw report JSON here to refresh the charts, summary, and tables without leaving the dashboard.</p>
+        </div>
+        <span class="insight-badge">Import Flow</span>
       </div>
-    </div>
-  </div>
-</section>
-
-<section class="grid two-col" style="margin-top:18px;">
-  <div class="panel">
-    <h2>Latency Ladder</h2>
-    <div class="chart">
-      {{range .LatencyBars}}
-      <div class="chart-row">
-        <div><strong>{{.Label}}</strong></div>
-        <div class="track"><div class="fill {{.Tone}}" style="width: {{printf "%.2f" .Width}}%"></div></div>
-        <div class="muted">{{.Value}}</div>
+      <form method="post" action="/dashboard/import">
+        <div class="field">
+          <label for="report_json">Report JSON</label>
+          <textarea id="report_json" name="report_json">{{.ReportJSON}}</textarea>
+        </div>
+        <div class="btn-row">
+          <button class="btn btn-primary" type="submit">Update Dashboard</button>
+          <a class="btn btn-secondary" href="/api/report">Inspect JSON API</a>
+        </div>
+      </form>
+    </section>
+    {{else}}
+    <section class="masthead">
+      <div class="masthead-grid">
+        <div>
+          <span class="eyebrow">Admin Dashboard</span>
+          <h1>Gostress Analytics Dashboard</h1>
+          <p>Sign-in protection is active. Load a report to unlock the admin-style KPI strip, reliability center, latency observatory, and import workflow.</p>
+        </div>
       </div>
-      {{end}}
-    </div>
-    <p class="muted">{{.LatencyNote}}</p>
-  </div>
-  <div class="panel">
-    <h2>Performance Notes</h2>
-    <div class="prose">
-      <p>{{.ThroughputNote}}</p>
-      <p><strong>Total data moved:</strong> {{formatFloat .Report.TotalDataMB}} MB</p>
-      <p><strong>Average throughput:</strong> {{formatFloat .Report.AvgThroughputMB}} MB/s</p>
-      <p><strong>Success status policy:</strong> <code>{{.Report.SuccessStatusSpec}}</code></p>
-      <p><strong>Rate limit:</strong> {{if gt .Report.RateLimitRPS 0.0}}{{formatFloat .Report.RateLimitRPS}} RPS{{else}}unlimited{{end}}</p>
-    </div>
-  </div>
-</section>
+    </section>
 
-<section class="grid two-col" style="margin-top:18px;">
-  <div class="panel">
-    <h2>Status Code Distribution</h2>
-    <div class="chart">
-      {{range .StatusCodeBars}}
-      <div class="chart-row">
-        <div><strong>{{.Label}}</strong></div>
-        <div class="track"><div class="fill tone-sea" style="width: {{printf "%.2f" .Width}}%"></div></div>
-        <div class="muted">{{.Value}}</div>
+    <section class="insight-card empty">
+      <h2>No report loaded yet</h2>
+      <p>Start the web app with <code>--dashboard-report report.json</code>, or paste report JSON below once you have a report available.</p>
+    </section>
+
+    <section id="data-ops" class="insight-card section-anchor">
+      <div class="insight-head">
+        <div>
+          <h2>Import Report JSON</h2>
+          <p>Paste a full report payload to populate the dashboard immediately.</p>
+        </div>
+        <span class="insight-badge">Import Flow</span>
       </div>
-      {{else}}
-      <div class="empty">No HTTP response data is available yet.</div>
-      {{end}}
-    </div>
-  </div>
-  <div class="panel">
-    <h2>Transport Error Distribution</h2>
-    <div class="chart">
-      {{range .ErrorBars}}
-      <div class="chart-row">
-        <div><strong>{{.Label}}</strong></div>
-        <div class="track"><div class="fill tone-rose" style="width: {{printf "%.2f" .Width}}%"></div></div>
-        <div class="muted">{{.Value}}</div>
-      </div>
-      {{else}}
-      <div class="empty">No transport errors were recorded for this report.</div>
-      {{end}}
-    </div>
-  </div>
-</section>
-
-<section class="grid two-col" style="margin-top:18px;">
-  <div class="panel">
-    <h2>Status Table</h2>
-    <table>
-      <thead><tr><th>Status</th><th>Count</th></tr></thead>
-      <tbody>
-        {{range .StatusCodes}}
-        <tr><td>{{.Key}}</td><td>{{.Value}}</td></tr>
-        {{else}}
-        <tr><td colspan="2">No status code data loaded</td></tr>
-        {{end}}
-      </tbody>
-    </table>
-  </div>
-  <div class="panel">
-    <h2>Transport Error Table</h2>
-    <table>
-      <thead><tr><th>Error</th><th>Count</th></tr></thead>
-      <tbody>
-        {{range .ErrorTypes}}
-        <tr><td>{{.Key}}</td><td>{{.Value}}</td></tr>
-        {{else}}
-        <tr><td colspan="2">No transport errors loaded</td></tr>
-        {{end}}
-      </tbody>
-    </table>
-  </div>
-</section>
-
-<section class="panel" style="margin-top:18px;">
-  <h2>Import Report JSON</h2>
-  <p class="muted">Paste a full JSON report here to update the protected dashboard immediately, or use the authenticated API endpoint at <code>/api/report</code>.</p>
-  <form method="post" action="/dashboard/import">
-    <div class="field">
-      <label for="report_json">Report JSON</label>
-      <textarea id="report_json" name="report_json">{{.ReportJSON}}</textarea>
-    </div>
-    <div class="btn-row">
-      <button class="btn btn-primary" type="submit">Update Dashboard</button>
-    </div>
-  </form>
-</section>
-{{else}}
-<section class="panel empty">
-  <h2>No report loaded yet</h2>
-  <p>Start the web app with <code>--dashboard-report report.json</code>, or paste report JSON into the import form once you have a report available.</p>
-</section>
-
-<section class="panel" style="margin-top:18px;">
-  <h2>Import Report JSON</h2>
-  <form method="post" action="/dashboard/import">
-    <div class="field">
-      <label for="report_json">Report JSON</label>
-      <textarea id="report_json" name="report_json" placeholder='{"start_time":"2026-04-21 12:00:00", ...}'></textarea>
-    </div>
-    <div class="btn-row">
-      <button class="btn btn-primary" type="submit">Load Dashboard</button>
-    </div>
-  </form>
-</section>
-{{end}}
+      <form method="post" action="/dashboard/import">
+        <div class="field">
+          <label for="report_json">Report JSON</label>
+          <textarea id="report_json" name="report_json" placeholder='{"start_time":"2026-04-21 12:00:00", ...}'></textarea>
+        </div>
+        <div class="btn-row">
+          <button class="btn btn-primary" type="submit">Load Dashboard</button>
+        </div>
+      </form>
+    </section>
+    {{end}}
+  </main>
+</div>
 {{template "shell_end" .}}
 {{end}}
 `

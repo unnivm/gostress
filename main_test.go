@@ -420,3 +420,23 @@ func TestFormatRampDuration(t *testing.T) {
 		t.Fatalf("expected empty string for zero duration, got %q", got)
 	}
 }
+
+func TestComputeThroughputPct(t *testing.T) {
+	tests := []struct {
+		observed float64
+		limit    float64
+		want     float64
+	}{
+		{200, 200, 100.0},
+		{150, 200, 75.0},
+		{0, 200, 0.0},
+		{100, 0, 0.0},
+		{50, 100, 50.0},
+	}
+	for _, tt := range tests {
+		got := computeThroughputPct(tt.observed, tt.limit)
+		if got != tt.want {
+			t.Errorf("computeThroughputPct(%v, %v) = %v, want %v", tt.observed, tt.limit, got, tt.want)
+		}
+	}
+}
