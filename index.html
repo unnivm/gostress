@@ -755,6 +755,29 @@
             font-size: 24px;
             cursor: pointer;
         }
+
+        .dashboard-showcase {
+            margin-bottom: 48px;
+            text-align: center;
+            opacity: 0;
+            animation: dashboardReveal 1s cubic-bezier(0.22, 1, 0.36, 1) 0.3s forwards;
+        }
+        .dashboard-showcase img {
+            width: 100%;
+            max-width: 1000px;
+            border-radius: 16px;
+            border: 1px solid rgba(255,255,255,0.08);
+            box-shadow: 0 20px 80px rgba(0,0,0,0.6), 0 0 80px rgba(0,212,255,0.1);
+            transition: transform 0.4s ease, box-shadow 0.4s ease;
+        }
+        .dashboard-showcase img:hover {
+            transform: scale(1.01);
+            box-shadow: 0 30px 100px rgba(0,0,0,0.7), 0 0 120px rgba(0,212,255,0.15);
+        }
+        @keyframes dashboardReveal {
+            from { opacity: 0; transform: translateY(30px) scale(0.97); }
+            to   { opacity: 1; transform: translateY(0) scale(1); }
+        }
         
         @media (max-width: 768px) {
             .mobile-nav-toggle { display: block; }
@@ -863,6 +886,12 @@
     <!-- ===== FEATURES ===== -->
     <section class="section" id="features">
         <div class="container">
+            <!-- Dashboard Showcase -->
+            <div class="dashboard-showcase">
+                <h2 style="font-size: 38px; font-weight: 800; margin-bottom: 12px; background: var(--gradient); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;">See It In Action</h2>
+                <p style="color: var(--text-muted); font-size: 18px; margin-bottom: 32px;">Dark-themed reports with interactive charts, latency percentiles, and diagnostic insights — generated from a single CLI command.</p>
+                <img src="gostress_dashnoard.png" alt="GoStress Dashboard — Dark-themed load test report with charts and metrics" />
+            </div>
             <div class="section-header">
                 <h2>Built for Developers, <br />by a Developer</h2>
                 <p>Everything you need for stress testing, nothing you don't.</p>
