@@ -1,5 +1,11 @@
 # gostress
 
+[![CI](https://github.com/unnivm/gostress/actions/workflows/ci.yml/badge.svg)](https://github.com/unnivm/gostress/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/unnivm/gostress/branch/main/graph/badge.svg)](https://codecov.io/gh/unnivm/gostress)
+[![Go Version](https://img.shields.io/badge/go-1.22+-blue)](https://go.dev/dl/)
+[![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+[![Go Report Card](https://goreportcard.com/badge/unnivm/gostress)](https://goreportcard.com/report/unnivm/gostress)
+
 `gostress` is a lightweight HTTP stress-testing tool written in Go.
 
 ## What it does
@@ -72,3 +78,20 @@ go run . --serve-web --web-addr :8088 --dashboard-report report.json
 - Account storage in this Go implementation is in-memory for the lifetime of the running process.
 - Transport-level problems such as timeouts or connection failures are counted separately.
 - Duration values in the saved report are written in human-readable Go duration format such as `125ms` or `10.2s`.
+
+## Tests & Coverage
+
+The repository runs the full test suite in CI (GitHub Actions) on every push and pull request, including `gofmt` checks, `go vet`, a race-detector build, and a statement-coverage report uploaded to Codecov and as an action artifact. Coverage is currently at **87.8%**.
+
+Run the tests locally with coverage:
+
+```bash
+go test ./...
+go test -cover ./...
+go test -coverprofile=coverage.out ./...
+go tool cover -html=coverage.out
+```
+
+## License
+
+[MIT](LICENSE)

@@ -2,7 +2,11 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"flag"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -438,5 +442,561 @@ func TestComputeThroughputPct(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("computeThroughputPct(%v, %v) = %v, want %v", tt.observed, tt.limit, got, tt.want)
 		}
+	}
+}
+
+func TestClassifyError(t *testing.T) {
+	if got := classifyError(context.DeadlineExceeded); got != "deadline_exceeded" {
+		t.Fatalf("expected deadline_exceeded, got %q", got)
+	}
+
+	if got := classifyError(errors.New("connection refused")); got != "connection refused" {
+		t.Fatalf("expected failed error message, got %q", got)
+	}
+}
+
+func TestClassifyErrorWrapsDeadline(t *testing.T) {
+	wrapped := wrapErrDeadline()
+	if got := classifyError(wrapped); got != "deadline_exceeded" {
+		t.Fatalf("expected deadline_exceeded for wrapped error, got %q", got)
+	}
+}
+
+func wrapErrDeadline() error {
+	return errors.Join(context.DeadlineExceeded, errors.New("operation timed out"))
+}
+
+func TestFormatHeaders(t *testing.T) {
+	if got := formatHeaders(nil); got != nil {
+		t.Fatalf("expected nil for empty headers, got %v", got)
+	}
+
+	headers := http.Header{}
+	headers.Set("Authorization", "Bearer token")
+	headers.Set("X-Trace", "abc123")
+	headers.Add("X-Multi", "one")
+
+	got := formatHeaders(headers)
+	if len(got) != 3 {
+		t.Fatalf("expected 3 formatted headers, got %d", len(got))
+	}
+
+	if got[0] != "Authorization: Bearer token" {
+		t.Fatalf("expected Authorization first, got %q", got[0])
+	}
+	if !strings.Contains(strings.Join(got, ","), "X-Multi: one") {
+		t.Fatalf("expected X-Multi header, got %v", got)
+	}
+
+	empty := http.Header{}
+	if got := formatHeaders(empty); got != nil {
+		t.Fatalf("expected nil for empty http.Header, got %v", got)
+	}
+}
+
+func TestFormatStatusCodes(t *testing.T) {
+	if got := formatStatusCodes(nil); got != nil {
+		t.Fatalf("expected nil for empty status codes, got %v", got)
+	}
+
+	got := formatStatusCodes(map[int]int{500: 2, 200: 10, 404: 5})
+	if len(got) != 3 {
+		t.Fatalf("expected 3 codes, got %d", len(got))
+	}
+
+	expected := []string{"200=10", "404=5", "500=2"}
+	for i, e := range expected {
+		if got[i] != e {
+			t.Fatalf("expected %q, got %q", e, got[i])
+		}
+	}
+}
+
+func TestFormatStringCounts(t *testing.T) {
+	if got := formatStringCounts(nil); got != nil {
+		t.Fatalf("expected nil for empty counts, got %v", got)
+	}
+
+	got := formatStringCounts(map[string]int{"deadline_exceeded": 3, "connection_reset": 1})
+	if len(got) != 2 {
+		t.Fatalf("expected 2 entries, got %d", len(got))
+	}
+
+	if got[0] != "connection_reset=1" || got[1] != "deadline_exceeded=3" {
+		t.Fatalf("expected sorted entries, got %v", got)
+	}
+}
+
+func TestStringifyIntMap(t *testing.T) {
+	if got := stringifyIntMap(nil); got != nil {
+		t.Fatalf("expected nil for empty maps, got %v", got)
+	}
+
+	got := stringifyIntMap(map[int]int{200: 5, 500: 1})
+	if got["200"] != 5 || got["500"] != 1 {
+		t.Fatalf("expected stringified map, got %v", got)
+	}
+
+	original := map[int]int{200: 5}
+	out := stringifyIntMap(original)
+	original[200] = 99
+	if out["200"] != 5 {
+		t.Fatalf("expected stringifyIntMap to copy values, got %d", out["200"])
+	}
+}
+
+func TestCloneStringMap(t *testing.T) {
+	if got := cloneStringMap(nil); got != nil {
+		t.Fatalf("expected nil for empty maps, got %v", got)
+	}
+
+	original := map[string]int{"200": 5, "500": 1}
+	clone := cloneStringMap(original)
+	original["200"] = 99
+
+	if clone["200"] != 5 {
+		t.Fatalf("expected clone to be independent, got %d", clone["200"])
+	}
+}
+
+func TestSafeDisplayValue(t *testing.T) {
+	if got := safeDisplayValue(""); got != "(none)" {
+		t.Fatalf("expected (none) for empty, got %q", got)
+	}
+	if got := safeDisplayValue("   "); got != "(none)" {
+		t.Fatalf("expected (none) for whitespace, got %q", got)
+	}
+	if got := safeDisplayValue("value"); got != "value" {
+		t.Fatalf("expected value, got %q", got)
+	}
+}
+
+func TestDefaultText(t *testing.T) {
+	if got := defaultText("", "fallback"); got != "fallback" {
+		t.Fatalf("expected fallback for empty, got %q", got)
+	}
+	if got := defaultText("   ", "fallback"); got != "fallback" {
+		t.Fatalf("expected fallback for whitespace, got %q", got)
+	}
+	if got := defaultText("real", "fallback"); got != "real" {
+		t.Fatalf("expected real value, got %q", got)
+	}
+}
+
+func TestFormatDuration(t *testing.T) {
+	if got := formatDuration(0); got != "0s" {
+		t.Fatalf("expected 0s for zero, got %q", got)
+	}
+	if got := formatDuration(-time.Second); got != "0s" {
+		t.Fatalf("expected 0s for negative, got %q", got)
+	}
+	if got := formatDuration(1500 * time.Millisecond); got != "1.5s" {
+		t.Fatalf("expected 1.5s, got %q", got)
+	}
+}
+
+func TestComputeThroughputMultipleValues(t *testing.T) {
+	totalMB, throughput := ComputeThroughput(1_048_576, 2*time.Second) // 1 MB over 2s
+	if totalMB != 1.0 {
+		t.Fatalf("expected 1.0 MB total, got %f", totalMB)
+	}
+	if throughput != 0.5 {
+		t.Fatalf("expected 0.5 MB/s, got %f", throughput)
+	}
+}
+
+func TestBuildReliabilityNoteBranches(t *testing.T) {
+	tests := []struct {
+		name   string
+		report TestReport
+		check  string
+	}{
+		{
+			name: "no requests",
+			report: TestReport{TotalRequests: 0},
+			check:  "No requests were recorded",
+		},
+		{
+			name: "no failures",
+			report: TestReport{TotalRequests: 100, FailedRequests: 0},
+			check:  "No failures were observed",
+		},
+		{
+			name: "rare failures",
+			report: TestReport{TotalRequests: 100, FailedRequests: 1, ErrorRate: 0.01},
+			check:  "broadly stable",
+		},
+		{
+			name: "more http failures",
+			report: TestReport{
+				TotalRequests:   100,
+				FailedRequests:  10,
+				HTTPFailures:    8,
+				TransportErrors: 2,
+				ErrorRate:       10.0,
+			},
+			check: "Most failures came back as HTTP responses",
+		},
+		{
+			name: "more transport errors",
+			report: TestReport{
+				TotalRequests:   100,
+				FailedRequests:  10,
+				HTTPFailures:    2,
+				TransportErrors: 8,
+				ErrorRate:       10.0,
+			},
+			check: "transport-level issues",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := buildReliabilityNote(tt.report)
+			if !strings.Contains(got, tt.check) {
+				t.Fatalf("expected note to contain %q, got %q", tt.check, got)
+			}
+		})
+	}
+}
+
+func TestBuildLatencyNoteBranches(t *testing.T) {
+	tests := []struct {
+		name   string
+		report TestReport
+		check  string
+	}{
+		{
+			name:   "no data",
+			report: TestReport{},
+			check:  "Latency data was not available",
+		},
+		{
+			name: "large tail",
+			report: TestReport{
+				AverageLatency: "10ms",
+				P99Latency:     "100ms",
+				P95Latency:     "50ms",
+				MaxLatency:     "150ms",
+			},
+			check: "Tail latency stretches well beyond the average",
+		},
+		{
+			name: "moderate tail",
+			report: TestReport{
+				AverageLatency: "20ms",
+				P99Latency:     "60ms",
+				P95Latency:     "30ms",
+				MaxLatency:     "80ms",
+			},
+			check: "worth watching if user-facing SLAs matter",
+		},
+		{
+			name: "compact",
+			report: TestReport{
+				AverageLatency: "10ms",
+				P99Latency:     "15ms",
+				P95Latency:     "12ms",
+				MaxLatency:     "18ms",
+			},
+			check: "Latency stayed relatively compact",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := buildLatencyNote(tt.report)
+			if !strings.Contains(got, tt.check) {
+				t.Fatalf("expected note to contain %q, got %q", tt.check, got)
+			}
+		})
+	}
+}
+
+func TestBuildThroughputNoteBranches(t *testing.T) {
+	limited := TestReport{RateLimitRPS: 200, RequestsPerSecond: 180}
+	if got := buildThroughputNote(limited); !strings.Contains(got, "rate-limited") {
+		t.Fatalf("expected rate-limited note, got %q", got)
+	}
+
+	unlimited := TestReport{RateLimitRPS: 0, RequestsPerSecond: 500}
+	if got := buildThroughputNote(unlimited); !strings.Contains(got, "No explicit RPS cap") {
+		t.Fatalf("expected unlimited note, got %q", got)
+	}
+}
+
+func TestDurationBar(t *testing.T) {
+	bar := durationBar("p50", "10ms", "100ms", "gradient-blue")
+	if bar.Label != "p50" {
+		t.Fatalf("expected label p50, got %q", bar.Label)
+	}
+	if bar.Width != 10.0 {
+		t.Fatalf("expected width 10, got %f", bar.Width)
+	}
+
+	tiny := durationBar("min", "1ns", "1h", "gradient-green")
+	if tiny.Width <= 0 {
+		t.Fatalf("expected positive width for tiny values, got %f", tiny.Width)
+	}
+
+	empty := durationBar("x", "0s", "0s", "gradient-red")
+	if empty.Width != 0 {
+		t.Fatalf("expected zero width for zero values, got %f", empty.Width)
+	}
+}
+
+func TestNewRateLimiter(t *testing.T) {
+	noop, err := newRateLimiter(0)
+	if err != nil {
+		t.Fatalf("newRateLimiter(0) returned error: %v", err)
+	}
+	if _, ok := noop.(noopLimiter); !ok {
+		t.Fatalf("expected noopLimiter for rps=0, got %T", noop)
+	}
+
+	limiter, err := newRateLimiter(1000)
+	if err != nil {
+		t.Fatalf("newRateLimiter(1000) returned error: %v", err)
+	}
+	defer limiter.Stop()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	if err := limiter.Wait(ctx); err != nil {
+		t.Fatalf("expected Wait to succeed, got %v", err)
+	}
+
+	if _, err := newRateLimiter(-1); err == nil {
+		t.Fatal("expected negative rps to fail")
+	}
+}
+
+func TestSortedStringMapEntries(t *testing.T) {
+	if got := sortedStringMapEntries(nil); got != nil {
+		t.Fatalf("expected nil for empty map, got %v", got)
+	}
+
+	got := sortedStringMapEntries(map[string]int{"b": 2, "a": 1, "c": 3})
+	if len(got) != 3 {
+		t.Fatalf("expected 3 entries, got %d", len(got))
+	}
+	if got[0].Key != "a" || got[1].Key != "b" || got[2].Key != "c" {
+		t.Fatalf("expected sorted keys, got %v", got)
+	}
+}
+
+func TestFormatStringMapEntries(t *testing.T) {
+	got := formatStringMapEntries("status_code", map[string]int{"200": 5, "500": 1})
+	if len(got) != 2 {
+		t.Fatalf("expected 2 entries, got %d", len(got))
+	}
+	if got[0][0] != "status_code.200" || got[0][1] != "5" {
+		t.Fatalf("expected prefixed entry, got %v", got[0])
+	}
+}
+
+func TestDurationBarClampsOverflow(t *testing.T) {
+	bar := durationBar("max", "200ms", "100ms", "gradient-red")
+	if bar.Width > 100.0 {
+		t.Fatalf("expected width clamped to <= 100, got %f", bar.Width)
+	}
+}
+
+func TestRunStressTestEndToEnd(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer srv.Close()
+
+	successStatus, err := parseStatusRanges("200-399")
+	if err != nil {
+		t.Fatalf("parseStatusRanges returned error: %v", err)
+	}
+
+	outputPrefix := filepath.Join(t.TempDir(), "report")
+	cfg := Config{
+		URL:               srv.URL,
+		Concurrency:       3,
+		Duration:          200 * time.Millisecond,
+		Method:            http.MethodGet,
+		SuccessStatusSpec: "200-399",
+		SuccessStatus:     successStatus,
+		OutputFormats:     []string{"json", "csv"},
+		OutputPrefix:      outputPrefix,
+	}
+
+	if err := runStressTest(cfg); err != nil {
+		t.Fatalf("runStressTest returned error: %v", err)
+	}
+
+	data, err := os.ReadFile(outputPrefix + ".json")
+	if err != nil {
+		t.Fatalf("expected json report to be written: %v", err)
+	}
+	var report TestReport
+	if err := json.Unmarshal(data, &report); err != nil {
+		t.Fatalf("failed to parse report json: %v", err)
+	}
+
+	if report.TotalRequests == 0 {
+		t.Fatal("expected at least one request to be recorded")
+	}
+	if report.SuccessRate < 0.999 {
+		t.Fatalf("expected ~100%% success rate, got %f", report.SuccessRate)
+	}
+	if report.URL != srv.URL {
+		t.Fatalf("expected url %q, got %q", srv.URL, report.URL)
+	}
+	if _, ok := report.StatusCodes["200"]; !ok {
+		t.Fatalf("expected status 200 in report, got %v", report.StatusCodes)
+	}
+
+	if _, err := os.Stat(outputPrefix + ".csv"); err != nil {
+		t.Fatalf("expected csv report to be written: %v", err)
+	}
+}
+
+func TestRunStressTestReportsTransportErrors(t *testing.T) {
+	successStatus, err := parseStatusRanges("200-399")
+	if err != nil {
+		t.Fatalf("parseStatusRanges returned error: %v", err)
+	}
+
+	outputPrefix := filepath.Join(t.TempDir(), "report")
+	cfg := Config{
+		URL:               "http://127.0.0.1:1/",
+		Concurrency:       1,
+		Duration:          150 * time.Millisecond,
+		Method:            http.MethodGet,
+		SuccessStatusSpec: "200-399",
+		SuccessStatus:     successStatus,
+		OutputFormats:     []string{"json"},
+		OutputPrefix:      outputPrefix,
+	}
+
+	if err := runStressTest(cfg); err != nil {
+		t.Fatalf("runStressTest returned error: %v", err)
+	}
+
+	data, err := os.ReadFile(outputPrefix + ".json")
+	if err != nil {
+		t.Fatalf("expected json report to be written: %v", err)
+	}
+	var report TestReport
+	if err := json.Unmarshal(data, &report); err != nil {
+		t.Fatalf("failed to parse report json: %v", err)
+	}
+
+	if report.TransportErrors == 0 {
+		t.Fatal("expected transport errors to be recorded")
+	}
+	if len(report.ErrorTypes) == 0 {
+		t.Fatal("expected transport error types to be recorded")
+	}
+}
+
+func TestNoopLimiterStopAndWait(t *testing.T) {
+	l := noopLimiter{}
+	if err := l.Wait(context.Background()); err != nil {
+		t.Fatalf("expected nil from Wait, got %v", err)
+	}
+	l.Stop()
+}
+
+func TestParseFlagsBuildsConfig(t *testing.T) {
+	flag.CommandLine = flag.NewFlagSet("stressy", flag.ExitOnError)
+	os.Args = []string{
+		"stressy",
+		"--url", "http://example.com/api",
+		"--c", "5",
+		"--d", "3",
+		"--method", "POST",
+		"--payload", `{"a":1}`,
+		"--headers", "X-Token:abc",
+		"--success-status", "200,404",
+		"--rps", "100",
+		"--ramp", "2",
+		"--formats", "json,csv",
+		"--output", "/tmp/report-x",
+	}
+
+	cfg, err := parseFlags()
+	if err != nil {
+		t.Fatalf("parseFlags returned error: %v", err)
+	}
+
+	if cfg.URL != "http://example.com/api" {
+		t.Fatalf("unexpected url: %q", cfg.URL)
+	}
+	if cfg.Concurrency != 5 {
+		t.Fatalf("unexpected concurrency: %d", cfg.Concurrency)
+	}
+	if cfg.Duration != 3*time.Second {
+		t.Fatalf("unexpected duration: %s", cfg.Duration)
+	}
+	if cfg.Method != http.MethodPost {
+		t.Fatalf("unexpected method: %q", cfg.Method)
+	}
+	if cfg.Payload != `{"a":1}` {
+		t.Fatalf("unexpected payload: %q", cfg.Payload)
+	}
+	if cfg.Headers != "X-Token:abc" {
+		t.Fatalf("unexpected headers: %q", cfg.Headers)
+	}
+	if cfg.RequestsPerSecond != 100 {
+		t.Fatalf("unexpected rps: %f", cfg.RequestsPerSecond)
+	}
+	if cfg.RampDuration != 2*time.Second {
+		t.Fatalf("unexpected ramp: %s", cfg.RampDuration)
+	}
+	if len(cfg.OutputFormats) != 2 || cfg.OutputFormats[0] != "json" || cfg.OutputFormats[1] != "csv" {
+		t.Fatalf("unexpected formats: %v", cfg.OutputFormats)
+	}
+	if len(cfg.SuccessStatus) != 2 {
+		t.Fatalf("expected 2 success status ranges, got %d", len(cfg.SuccessStatus))
+	}
+}
+
+func TestParseFlagsFromReportModeSetsPrefix(t *testing.T) {
+	flag.CommandLine = flag.NewFlagSet("stressy", flag.ExitOnError)
+	os.Args = []string{"stressy", "--from-report", "/tmp/foo.json", "--formats", "html"}
+
+	cfg, err := parseFlags()
+	if err != nil {
+		t.Fatalf("parseFlags returned error: %v", err)
+	}
+	if cfg.FromReport != "/tmp/foo.json" {
+		t.Fatalf("unexpected from-report: %q", cfg.FromReport)
+	}
+	if cfg.OutputPrefix != "/tmp/foo" {
+		t.Fatalf("expected output prefix derived from report, got %q", cfg.OutputPrefix)
+	}
+}
+
+func TestMainFromReportModeWritesOutput(t *testing.T) {
+	dir := t.TempDir()
+	report := sampleWebReport()
+	data, err := renderJSONReport(report)
+	if err != nil {
+		t.Fatalf("renderJSONReport returned error: %v", err)
+	}
+	source := filepath.Join(dir, "source.json")
+	if err := os.WriteFile(source, data, 0o644); err != nil {
+		t.Fatalf("failed to write source report: %v", err)
+	}
+
+	flag.CommandLine = flag.NewFlagSet("stressy", flag.ExitOnError)
+	os.Args = []string{
+		"stressy",
+		"--from-report", source,
+		"--formats", "html",
+		"--output", filepath.Join(dir, "out"),
+	}
+
+	main()
+
+	if _, err := os.Stat(filepath.Join(dir, "out.html")); err != nil {
+		t.Fatalf("expected html output to be written: %v", err)
 	}
 }
