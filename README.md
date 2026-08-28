@@ -1,6 +1,7 @@
 # gostress
 
 [![CI](https://github.com/unnivm/gostress/actions/workflows/ci.yml/badge.svg)](https://github.com/unnivm/gostress/actions/workflows/ci.yml)
+[![Build Health](https://img.shields.io/github/checks-status/unnivm/gostress/main)](https://github.com/unnivm/gostress/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/unnivm/gostress/branch/main/graph/badge.svg)](https://codecov.io/gh/unnivm/gostress)
 [![Go Version](https://img.shields.io/badge/go-1.22+-blue)](https://go.dev/dl/)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
@@ -78,6 +79,20 @@ go run . --serve-web --web-addr :8088 --dashboard-report report.json
 - Account storage in this Go implementation is in-memory for the lifetime of the running process.
 - Transport-level problems such as timeouts or connection failures are counted separately.
 - Duration values in the saved report are written in human-readable Go duration format such as `125ms` or `10.2s`.
+
+## Build Health
+
+The `ci` workflow runs on every push to `main` and on every pull request, building the project with Go 1.22 and 1.24:
+
+| Check | What it does |
+|---|---|
+| `gofmt` | Fails the build if any file is not formatted |
+| `go vet` | Static analysis for suspicious constructs |
+| `go build` | Confirms the project compiles |
+| `go test -race` | Runs the full test suite with the race detector |
+| Coverage | Uploaded to Codecov and as an action artifact |
+
+A green badge above means the latest build on `main` passed all checks. To check run history and logs, see the [Actions tab](https://github.com/unnivm/gostress/actions/workflows/ci.yml).
 
 ## Tests & Coverage
 
