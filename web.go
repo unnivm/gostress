@@ -64,9 +64,9 @@ type dashboardPageData struct {
 	ReportJSON        string
 	SuccessPct        float64
 	HTTPFailurePct    float64
-		TransportErrorPct float64
-		ThroughputPct     float64
-		SummaryHeadline   string
+	TransportErrorPct float64
+	ThroughputPct     float64
+	SummaryHeadline   string
 	SummaryParagraphs []string
 	LatencyBars       []chartBar
 	StatusCodeBars    []chartBar

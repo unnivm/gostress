@@ -47,6 +47,10 @@ go run . --from-report report.json --formats html --output reports/run-01
 go run . --serve-web --web-addr :8088 --dashboard-report report.json
 ```
 
+```bash
+go run . --url http://localhost:3000/ --d 60 --live-web :8088
+```
+
 ## Flags
 
 - `--url`: target URL, required
@@ -64,6 +68,7 @@ go run . --serve-web --web-addr :8088 --dashboard-report report.json
 - `--serve-web`: start the protected web dashboard instead of running a stress test
 - `--web-addr`: bind address for the web dashboard, default `:8088`
 - `--dashboard-report`: preload the dashboard from a JSON report file such as `report.json`
+- `--live-web`: serve a live dashboard at this address during a running test (example `:8088`), disabled by default
 
 ## Notes
 
@@ -76,6 +81,7 @@ go run . --serve-web --web-addr :8088 --dashboard-report report.json
 - `--from-report` is handy when you already have `report.json` and only want to re-render it as polished HTML.
 - `--serve-web` adds a sign-up page, login page, logout page, a protected dashboard, and authenticated JSON import/API routes.
 - The dashboard can load report data from `--dashboard-report`, from the protected `/api/report` endpoint, or from the JSON paste form in the UI.
+- `--live-web` shows a lightweight progress dashboard while the test runs. It uses a fixed 64-bucket log-scale latency histogram for percentiles, a 300-second ring buffer for the timeline, and plain 1-second JSON polling, so memory stays constant regardless of request volume. Open the printed URL (`http://localhost:8088/live`) in a browser.
 - Account storage in this Go implementation is in-memory for the lifetime of the running process.
 - Transport-level problems such as timeouts or connection failures are counted separately.
 - Duration values in the saved report are written in human-readable Go duration format such as `125ms` or `10.2s`.

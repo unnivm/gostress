@@ -1,40 +1,40 @@
 {
-  "start_time": "2026-08-26 21:30:53",
-  "url": "http://localhost:8080/examples/servlets/servlet/HelloWorldExample",
-  "concurrency": 1500,
-  "duration": "2m0s",
+  "start_time": "2026-10-11 08:31:26",
+  "url": "http://127.0.0.1:8099/",
+  "concurrency": 1000,
+  "duration": "30s",
   "method": "GET",
   "payload": "",
   "headers": null,
   "success_status": "200-399",
-  "rate_limit_rps": 10000,
-  "ramp_duration": "1m0s (1 → 1500 workers)",
+  "rate_limit_rps": 0,
+  "ramp_duration": "",
   "output_formats": [
-    "json",
-    "html"
+    "json"
   ],
   "status_codes": {
-    "200": 1185938
+    "200": 30873
   },
   "transport_error_types": {
-    "deadline_exceeded": 9
+    "Get \"http://127.0.0.1:8099/\": dial tcp 127.0.0.1:8099: connect: can't assign requested address": 4111,
+    "deadline_exceeded": 906
   },
-  "total_requests": 1185947,
-  "failed_requests": 9,
-  "transport_errors": 9,
+  "total_requests": 35890,
+  "failed_requests": 5017,
+  "transport_errors": 5017,
   "http_failures": 0,
-  "success_requests": 1185938,
-  "success_rate": 99.99924111279846,
-  "error_rate": 0.0007588872015359877,
-  "requests_per_second": 9880.18986699635,
-  "min_latency": "22.542µs",
-  "max_latency": "20.829125ms",
-  "average_latency": "50.118µs",
-  "p50_latency": "43µs",
-  "p95_latency": "70.375µs",
-  "p99_latency": "274µs",
-  "total_data_mb": 437.6964626312256,
-  "avg_throughput_mb_s": 3.646473370993123,
-  "throughput_pct": 98.8018986699635,
-  "actual_duration": "2m0.03281475s"
+  "success_requests": 30873,
+  "success_rate": 86.02117581499024,
+  "error_rate": 13.978824185009753,
+  "requests_per_second": 1189.4405731069853,
+  "min_latency": "7.105792ms",
+  "max_latency": "16.596015625s",
+  "average_latency": "557.770673ms",
+  "p50_latency": "180.261ms",
+  "p95_latency": "2.374884667s",
+  "p99_latency": "6.522453167s",
+  "total_data_mb": 1869.8609247207642,
+  "avg_throughput_mb_s": 61.96958623377608,
+  "throughput_pct": 0,
+  "actual_duration": "30.173848792s"
 }

@@ -612,17 +612,17 @@ func TestBuildReliabilityNoteBranches(t *testing.T) {
 		check  string
 	}{
 		{
-			name: "no requests",
+			name:   "no requests",
 			report: TestReport{TotalRequests: 0},
 			check:  "No requests were recorded",
 		},
 		{
-			name: "no failures",
+			name:   "no failures",
 			report: TestReport{TotalRequests: 100, FailedRequests: 0},
 			check:  "No failures were observed",
 		},
 		{
-			name: "rare failures",
+			name:   "rare failures",
 			report: TestReport{TotalRequests: 100, FailedRequests: 1, ErrorRate: 0.01},
 			check:  "broadly stable",
 		},

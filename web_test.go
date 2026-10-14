@@ -670,7 +670,7 @@ func TestServeWebReportsBindError(t *testing.T) {
 
 func TestServeWebRejectsUnreadableDashboardReport(t *testing.T) {
 	err := serveWeb(Config{
-		WebAddr:        "127.0.0.1:0",
+		WebAddr:         "127.0.0.1:0",
 		DashboardReport: filepath.Join(t.TempDir(), "missing.json"),
 	})
 	if err == nil {

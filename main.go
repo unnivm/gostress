@@ -13,11 +13,13 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -43,6 +45,7 @@ type Config struct {
 	WebAddr           string
 	DashboardReport   string
 	RampDuration      time.Duration
+	LiveWebAddr       string
 }
 
 type Result struct {
@@ -337,6 +340,7 @@ func parseFlags() (Config, error) {
 	serveWeb := flag.Bool("serve-web", false, "Run the protected web dashboard")
 	webAddr := flag.String("web-addr", ":8088", "Address for the web dashboard server")
 	dashboardReport := flag.String("dashboard-report", "", "Load dashboard data from a JSON report file")
+	liveWeb := flag.String("live-web", "", "Serve a live dashboard at this address during the test run (example: :8088)")
 	flag.Parse()
 
 	cfg := Config{
@@ -354,6 +358,7 @@ func parseFlags() (Config, error) {
 		ServeWeb:          *serveWeb,
 		WebAddr:           strings.TrimSpace(*webAddr),
 		DashboardReport:   strings.TrimSpace(*dashboardReport),
+		LiveWebAddr:       strings.TrimSpace(*liveWeb),
 	}
 
 	parsedFormats, err := parseOutputFormats(*formats)
@@ -370,6 +375,15 @@ func parseFlags() (Config, error) {
 }
 
 func validateAndNormalizeConfig(cfg Config) (Config, error) {
+	if cfg.LiveWebAddr != "" {
+		if cfg.ServeWeb {
+			return Config{}, errors.New("--live-web cannot be combined with --serve-web")
+		}
+		if cfg.FromReport != "" {
+			return Config{}, errors.New("--live-web requires a live stress test, not --from-report")
+		}
+	}
+
 	if cfg.ServeWeb {
 		if cfg.WebAddr == "" {
 			return Config{}, errors.New("--web-addr must not be empty")
@@ -671,10 +685,28 @@ func runStressTest(cfg Config) error {
 		ramp = newConcurrencyRamp(cfg.Concurrency, cfg.Concurrency, 0, deadline)
 	}
 
-	stopProgress := make(chan struct{})
-	go showProgress(startTime, cfg.Duration, stopProgress, func() int {
-		return ramp.CurrentLimit()
-	})
+	var live *liveReporter
+	var liveServer *http.Server
+	var liveAddr string
+	if cfg.LiveWebAddr != "" {
+		live = newLiveReporter(cfg, startTime, deadline, ramp)
+		addr, srv, err := startLiveServer(cfg.LiveWebAddr, live)
+		if err != nil {
+			return err
+		}
+		liveAddr = addr
+		liveServer = srv
+		defer stopLiveServer(liveServer)
+		fmt.Printf("Live dashboard: %s\n", liveURL(liveAddr))
+	}
+
+	var stopProgress chan struct{}
+	if live == nil {
+		stopProgress = make(chan struct{})
+		go showProgress(startTime, cfg.Duration, stopProgress, func() int {
+			return ramp.CurrentLimit()
+		})
+	}
 
 	go func() {
 		spawned := 0
@@ -712,6 +744,9 @@ func runStressTest(cfg Config) error {
 	for result := range results {
 		summary.TotalRequests++
 		totalBytes += result.BytesRead
+		if live != nil {
+			live.sample(result)
+		}
 
 		if result.Error != nil {
 			summary.FailedRequests++
@@ -731,7 +766,9 @@ func runStressTest(cfg Config) error {
 		summary.HTTPFailures++
 	}
 
-	close(stopProgress)
+	if stopProgress != nil {
+		close(stopProgress)
+	}
 
 	elapsed := time.Since(startTime)
 	summary.ActualDuration = elapsed
@@ -745,7 +782,18 @@ func runStressTest(cfg Config) error {
 		summary.LatencyStats = ComputeLatencyStats(latencies)
 	}
 
-	return printAndSaveReport(cfg, startTime, summary)
+	if live != nil {
+		live.finish()
+	}
+
+	reportErr := printAndSaveReport(cfg, startTime, summary)
+	if live != nil {
+		fmt.Printf("\nTest finished. Live dashboard stays open at %s — press Ctrl+C to quit.\n", liveURL(liveAddr))
+		sig := make(chan os.Signal, 1)
+		signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
+		<-sig
+	}
+	return reportErr
 }
 
 func showProgress(start time.Time, duration time.Duration, done <-chan struct{}, currentConcurrency func() int) {
@@ -1739,7 +1787,12 @@ func renderHTMLReport(report TestReport) ([]byte, error) {
 		"formatRate":  formatRateLimit,
 		"sub":         func(a, b float64) float64 { return a - b },
 		"add":         func(a, b float64) float64 { return a + b },
-		"minf":        func(a, b float64) float64 { if a < b { return a }; return b },
+		"minf": func(a, b float64) float64 {
+			if a < b {
+				return a
+			}
+			return b
+		},
 	}).Parse(reportTemplate)
 	if err != nil {
 		return nil, err
