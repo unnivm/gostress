@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"html/template"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
@@ -29,23 +30,29 @@ type statusRange struct {
 }
 
 type Config struct {
-	URL               string
-	Concurrency       int
-	Duration          time.Duration
-	Method            string
-	Payload           string
-	Headers           string
-	SuccessStatusSpec string
-	SuccessStatus     []statusRange
-	RequestsPerSecond float64
-	OutputFormats     []string
-	OutputPrefix      string
-	FromReport        string
-	ServeWeb          bool
-	WebAddr           string
-	DashboardReport   string
-	RampDuration      time.Duration
-	LiveWebAddr       string
+	URL                  string
+	Concurrency          int
+	Duration             time.Duration
+	Method               string
+	Payload              string
+	Headers              string
+	SuccessStatusSpec    string
+	SuccessStatus        []statusRange
+	RequestsPerSecond    float64
+	OutputFormats        []string
+	OutputPrefix         string
+	FromReport           string
+	ServeWeb             bool
+	WebAddr              string
+	DashboardReport      string
+	RampDuration         time.Duration
+	LiveWebAddr          string
+	MaxP95Latency        time.Duration
+	HasMaxP95Latency     bool
+	MaxErrorRate         float64
+	HasMaxErrorRate      bool
+	MinRequestsPerSec    float64
+	HasMinRequestsPerSec bool
 }
 
 type Result struct {
@@ -341,24 +348,41 @@ func parseFlags() (Config, error) {
 	webAddr := flag.String("web-addr", ":8088", "Address for the web dashboard server")
 	dashboardReport := flag.String("dashboard-report", "", "Load dashboard data from a JSON report file")
 	liveWeb := flag.String("live-web", "", "Serve a live dashboard at this address during the test run (example: :8088)")
+	maxP95 := flag.String("max-p95", "", "Fail the run if p95 latency exceeds this duration (example: 300ms)")
+	maxErrorRate := flag.Float64("max-error-rate", -1, "Fail the run if error rate exceeds this percentage (example: 1.0)")
+	minRPS := flag.Float64("min-rps", -1, "Fail the run if requests per second is below this value")
 	flag.Parse()
+	provided := make(map[string]bool)
+	flag.Visit(func(f *flag.Flag) { provided[f.Name] = true })
 
 	cfg := Config{
-		URL:               strings.TrimSpace(*urlFlag),
-		Concurrency:       *concurrency,
-		Duration:          time.Duration(*duration) * time.Second,
-		Method:            strings.ToUpper(strings.TrimSpace(*method)),
-		Payload:           *payload,
-		Headers:           strings.TrimSpace(*headers),
-		SuccessStatusSpec: strings.TrimSpace(*successStatus),
-		RequestsPerSecond: *rps,
-		RampDuration:      time.Duration(*ramp) * time.Second,
-		OutputPrefix:      strings.TrimSpace(*output),
-		FromReport:        strings.TrimSpace(*fromReport),
-		ServeWeb:          *serveWeb,
-		WebAddr:           strings.TrimSpace(*webAddr),
-		DashboardReport:   strings.TrimSpace(*dashboardReport),
-		LiveWebAddr:       strings.TrimSpace(*liveWeb),
+		URL:                  strings.TrimSpace(*urlFlag),
+		Concurrency:          *concurrency,
+		Duration:             time.Duration(*duration) * time.Second,
+		Method:               strings.ToUpper(strings.TrimSpace(*method)),
+		Payload:              *payload,
+		Headers:              strings.TrimSpace(*headers),
+		SuccessStatusSpec:    strings.TrimSpace(*successStatus),
+		RequestsPerSecond:    *rps,
+		RampDuration:         time.Duration(*ramp) * time.Second,
+		OutputPrefix:         strings.TrimSpace(*output),
+		FromReport:           strings.TrimSpace(*fromReport),
+		ServeWeb:             *serveWeb,
+		WebAddr:              strings.TrimSpace(*webAddr),
+		DashboardReport:      strings.TrimSpace(*dashboardReport),
+		LiveWebAddr:          strings.TrimSpace(*liveWeb),
+		MaxErrorRate:         *maxErrorRate,
+		HasMaxErrorRate:      provided["max-error-rate"],
+		MinRequestsPerSec:    *minRPS,
+		HasMinRequestsPerSec: provided["min-rps"],
+	}
+	if provided["max-p95"] {
+		cfg.HasMaxP95Latency = true
+		parsedDuration, parseErr := time.ParseDuration(strings.TrimSpace(*maxP95))
+		if parseErr != nil {
+			return Config{}, fmt.Errorf("invalid --max-p95 value %q: %w", *maxP95, parseErr)
+		}
+		cfg.MaxP95Latency = parsedDuration
 	}
 
 	parsedFormats, err := parseOutputFormats(*formats)
@@ -375,6 +399,20 @@ func parseFlags() (Config, error) {
 }
 
 func validateAndNormalizeConfig(cfg Config) (Config, error) {
+	thresholdsSet := cfg.HasMaxP95Latency || cfg.HasMaxErrorRate || cfg.HasMinRequestsPerSec
+	if thresholdsSet && (cfg.ServeWeb || cfg.FromReport != "") {
+		return Config{}, errors.New("threshold flags can only be used with a live stress test")
+	}
+	if cfg.HasMaxP95Latency && cfg.MaxP95Latency <= 0 {
+		return Config{}, errors.New("--max-p95 must be a positive duration")
+	}
+	if cfg.HasMaxErrorRate && (math.IsNaN(cfg.MaxErrorRate) || math.IsInf(cfg.MaxErrorRate, 0) || cfg.MaxErrorRate < 0 || cfg.MaxErrorRate > 100) {
+		return Config{}, errors.New("--max-error-rate must be between 0 and 100")
+	}
+	if cfg.HasMinRequestsPerSec && (math.IsNaN(cfg.MinRequestsPerSec) || math.IsInf(cfg.MinRequestsPerSec, 0) || cfg.MinRequestsPerSec < 0) {
+		return Config{}, errors.New("--min-rps must be 0 or greater")
+	}
+
 	if cfg.LiveWebAddr != "" {
 		if cfg.ServeWeb {
 			return Config{}, errors.New("--live-web cannot be combined with --serve-web")
@@ -787,13 +825,40 @@ func runStressTest(cfg Config) error {
 	}
 
 	reportErr := printAndSaveReport(cfg, startTime, summary)
+	thresholdErr := evaluateThresholds(cfg, summary)
+	if thresholdErr != nil {
+		fmt.Printf("\nThreshold result: FAIL\n%s\n", thresholdErr)
+	} else if cfg.HasMaxP95Latency || cfg.HasMaxErrorRate || cfg.HasMinRequestsPerSec {
+		fmt.Println("\nThreshold result: PASS")
+	}
 	if live != nil {
 		fmt.Printf("\nTest finished. Live dashboard stays open at %s — press Ctrl+C to quit.\n", liveURL(liveAddr))
 		sig := make(chan os.Signal, 1)
 		signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
 		<-sig
 	}
-	return reportErr
+	return errors.Join(reportErr, thresholdErr)
+}
+
+func evaluateThresholds(cfg Config, summary Summary) error {
+	var failures []string
+	if cfg.HasMaxP95Latency {
+		if summary.SuccessRequests == 0 {
+			failures = append(failures, "p95 latency unavailable (no successful requests)")
+		} else if summary.LatencyStats.P95 > cfg.MaxP95Latency {
+			failures = append(failures, fmt.Sprintf("p95 latency %s exceeds maximum %s", formatDuration(summary.LatencyStats.P95), formatDuration(cfg.MaxP95Latency)))
+		}
+	}
+	if cfg.HasMaxErrorRate && summary.ErrorRate > cfg.MaxErrorRate {
+		failures = append(failures, fmt.Sprintf("error rate %.2f%% exceeds maximum %.2f%%", summary.ErrorRate, cfg.MaxErrorRate))
+	}
+	if cfg.HasMinRequestsPerSec && summary.RequestsPerSecond < cfg.MinRequestsPerSec {
+		failures = append(failures, fmt.Sprintf("request rate %.2f RPS is below minimum %.2f RPS", summary.RequestsPerSecond, cfg.MinRequestsPerSec))
+	}
+	if len(failures) == 0 {
+		return nil
+	}
+	return errors.New(strings.Join(failures, "; "))
 }
 
 func showProgress(start time.Time, duration time.Duration, done <-chan struct{}, currentConcurrency func() int) {

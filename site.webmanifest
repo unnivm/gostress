@@ -1,0 +1,17 @@
+{
+  "name": "GoStress",
+  "short_name": "GoStress",
+  "description": "A lightweight HTTP stress testing tool written in Go.",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#07111f",
+  "theme_color": "#101d35",
+  "icons": [
+    {
+      "src": "gostress-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

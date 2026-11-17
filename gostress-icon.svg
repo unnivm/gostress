@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title">
+  <title id="title">GoStress gopher and speedometer</title>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#101d35"/>
+      <stop offset="1" stop-color="#07111f"/>
+    </linearGradient>
+    <linearGradient id="fur" x1="0" y1="0" x2=".8" y2="1">
+      <stop stop-color="#55e7ff"/>
+      <stop offset="1" stop-color="#078ed2"/>
+    </linearGradient>
+    <linearGradient id="dial" x1="0" y1="0" x2="1" y2="0">
+      <stop stop-color="#31d89a"/>
+      <stop offset=".52" stop-color="#ffe34e"/>
+      <stop offset="1" stop-color="#ff594d"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="url(#bg)"/>
+  <path d="M83 310a173 173 0 0 1 346 0" fill="none" stroke="#263c58" stroke-width="31" stroke-linecap="round"/>
+  <path d="M83 310a173 173 0 0 1 346 0" fill="none" stroke="url(#dial)" stroke-width="20" stroke-linecap="round"/>
+  <g stroke="#d7f8ff" stroke-width="10" stroke-linecap="round" opacity=".9">
+    <path d="m111 229 17 10"/><path d="m164 164 12 17"/><path d="m256 137v20"/><path d="m348 164-12 17"/><path d="m401 229-17 10"/>
+  </g>
+  <path d="m256 300 105-101" stroke="#ff6359" stroke-width="14" stroke-linecap="round"/>
+  <circle cx="256" cy="300" r="19" fill="#eafaff" stroke="#12243a" stroke-width="9"/>
+  <g fill="url(#fur)" stroke="#073b64" stroke-width="12" stroke-linejoin="round">
+    <path d="M153 237c-14-38-5-76 23-82 25-5 42 19 45 52"/>
+    <path d="M359 237c14-38 5-76-23-82-25-5-42 19-45 52"/>
+    <path d="M133 285c0-77 54-123 123-123s123 46 123 123v57c0 64-51 112-123 112s-123-48-123-112z"/>
+  </g>
+  <path d="M158 276c0-34 24-57 54-57s54 23 54 57-24 57-54 57-54-23-54-57zm88 0c0-34 24-57 54-57s54 23 54 57-24 57-54 57-54-23-54-57z" fill="#f5fcff" stroke="#073b64" stroke-width="10"/>
+  <g fill="#10253c">
+    <ellipse cx="214" cy="278" rx="11" ry="17"/><ellipse cx="300" cy="278" rx="11" ry="17"/>
+    <path d="M245 332q11-10 22 0l-11 14z"/>
+  </g>
+  <path d="M239 357q17 13 34 0v35h-34z" fill="#fff" stroke="#073b64" stroke-width="8" stroke-linejoin="round"/>
+  <path d="M256 359v31" stroke="#b7eaff" stroke-width="5"/>
+</svg>

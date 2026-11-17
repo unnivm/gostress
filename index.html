@@ -3,7 +3,10 @@
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#101d35" />
     <title>GoStress - Simple API Stress Testing with Beautiful Reports</title>
+    <link rel="icon" type="image/svg+xml" href="gostress-icon.svg" />
+    <link rel="manifest" href="site.webmanifest" />
     
     <!-- Font Awesome for Icons -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" />
@@ -292,6 +295,16 @@
             justify-content: center;
             align-items: center;
             position: relative;
+        }
+
+        .hero-image {
+            display: block;
+            width: 100%;
+            max-width: 560px;
+            height: auto;
+            border: 1px solid rgba(0, 212, 255, 0.28);
+            border-radius: 24px;
+            box-shadow: 0 24px 80px rgba(0, 0, 0, 0.4), 0 0 60px rgba(0, 212, 255, 0.12);
         }
         
         .terminal-window {
@@ -863,21 +876,7 @@
                 </div>
                 
                 <div class="hero-visual">
-                    <div class="terminal-window">
-                        <div class="terminal-header">
-                            <span class="terminal-dot red"></span>
-                            <span class="terminal-dot yellow"></span>
-                            <span class="terminal-dot green"></span>
-                            <span class="terminal-title">terminal — bash</span>
-                        </div>
-                        <div class="terminal-body">
-                            <div><span class="command">$</span> go run . --url http://localhost:8080 --formats html</div>
-                            <div class="output">✓ Running stress test...</div>
-                            <div class="output">✓ 1,234 requests completed</div>
-                            <div class="output">✓ report.html generated</div>
-                            <div class="dim">✨ Open report.html in your browser</div>
-                        </div>
-                    </div>
+                    <img class="hero-image" src="gostress.png" alt="GoStress gopher mascot with a speedometer, performance chart, and server stack" />
                 </div>
             </div>
         </div>
@@ -1005,6 +1004,20 @@
             </div>
 
             <div class="blog-grid">
+
+                <!-- Feature Tour -->
+                <a href="blog/gostress-feature-tour.html" class="blog-card blog-card-featured">
+                    <div class="blog-content">
+                        <span class="blog-tag tag-guide">Product Guide</span>
+                        <h3>A Feature Tour of GoStress</h3>
+                        <p>Explore traffic controls, latency and error metrics, the dynamic dashboard, report formats, and threshold-based CI performance gates.</p>
+                        <div class="blog-meta">
+                            <span><i class="far fa-calendar"></i> Nov 17, 2026</span>
+                            <span><i class="far fa-clock"></i> 8 min read</span>
+                        </div>
+                    </div>
+                    <div class="blog-code"><div><span class="prompt">$ </span><span class="cmd">gostress</span> <span class="flag">--url</span> <span class="val">http://localhost:8080</span><br>&nbsp;&nbsp;<span class="flag">--ramp</span> <span class="val">15</span> <span class="flag">--max-p95</span> <span class="val">300ms</span></div></div>
+                </a>
 
                 <!-- Featured Post -->
                 <a href="blog/live-dashboard.html" class="blog-card blog-card-featured">
