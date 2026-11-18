@@ -1,7 +1,7 @@
 # gostress
 
 [![CI](https://github.com/unnivm/gostress/actions/workflows/ci.yml/badge.svg)](https://github.com/unnivm/gostress/actions/workflows/ci.yml)
-[![Build Health](https://img.shields.io/github/checks-status/unnivm/gostress/main)](https://github.com/unnivm/gostress/actions/workflows/ci.yml)
+[![Build Health](https://img.shields.io/github/checks-status/unnivm/gostress/main)](https://github.com/unnivm/gostress/actions/workflows/pages/pages-build-deployment)
 [![codecov](https://codecov.io/gh/unnivm/gostress/branch/main/graph/badge.svg)](https://codecov.io/gh/unnivm/gostress)
 [![Go Version](https://img.shields.io/badge/go-1.22+-blue)](https://go.dev/dl/)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
